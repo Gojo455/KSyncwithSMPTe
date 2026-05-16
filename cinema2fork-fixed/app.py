@@ -1,3 +1,4 @@
+import os
 """
 ksync — Seat-Aware Cinema Reservation System
 Abuja, Nigeria | Flask + SQLite | Hybrid Recommender | Paystack Payments
@@ -1146,6 +1147,7 @@ def admin_bookings():
 def get_halls():
     return jsonify([dict(h) for h in qdb("SELECT h.*,c.name as cinema_name FROM halls h JOIN cinemas c ON h.cinema_id=c.id")])
 
+
 with app.app_context():
     init_db()
 
@@ -1154,8 +1156,9 @@ if __name__ == '__main__':
     print("="*55)
     print("  ksync — Cinema Reservation System")
     print("  Abuja, Nigeria")
-    print("  http://127.0.0.1:5000")
     print("  Admin: admin / admin123")
     print("  Demo:  demo  / demo123")
     print("="*55)
-    app.run(debug=False, port=5000)
+
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
