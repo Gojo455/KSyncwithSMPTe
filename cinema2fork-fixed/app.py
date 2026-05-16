@@ -148,7 +148,7 @@ def compute_seat_quality(row, col, total_rows, total_cols):
     if cd > 0.30:
         cs *= 0.60
 
-    # ── COMBINE AND SCALE ──────────────────────────────────────────
+    #  COMBINE AND SCALE
     # Row: 60% weight  |  Column: 40% weight  (SMPTE longitudinal emphasis)
     q = (rs * 0.60 + cs * 0.40) * 10.0
     return round(min(max(q, 0.5), 10.0), 2)
@@ -175,8 +175,8 @@ def classify_seat(row, col, total_rows, total_cols):
     return tags
 
 
-# ═══════════════════════════════════════════════════════════════════
-#  SCORE 2 — SUBJECTIVE PREFERENCE MATCH  (Q_pref)
+
+#  SCORE 2 SUBJECTIVE PREFERENCE MATCH  (Q_pref)
 #
 #  This score belongs to the USER, not the seat.
 #  It is computed live during recommendations and seat selection.
