@@ -962,6 +962,91 @@ def get_seats(sid):
     return jsonify({'seats': seat_list, 'showtime': dict(st)})
 
 
+@app.route('/api/seats/<int:sid>/suggest')
+def suggest_seats(sid):
+    """
+    Return the top-3 suggested seats for a showtime.
+    Scoring: 60 % Q_obj (objective quality) + 40 % Q_pref (user preference).
+    For guests (not logged in) Q_pref defaults to centre/middle/7.0 so the
+    best-positioned seats are still surfaced meaningfully.
+    """
+    user_id = session.get('user_id')
+    prefs   = get_prefs(user_id) if user_id else {
+        'seat_position_pref': 'center',
+        'seat_zone_pref':     'middle',
+        'avg_quality_pref':   7.0,
+    }
+
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    db  = get_db()
+    # expire stale locks first
+    db.execute("""
+        UPDATE seats SET status='available', locked_by=NULL, locked_until=NULL
+        WHERE showtime_id=? AND status='locked' AND locked_until<?
+    """, (sid, now))
+    db.commit()
+
+    avail = qdb(
+        """SELECT id, row_num, col_num, row_label, seat_number,
+                  quality_score, position_tags, status
+           FROM seats WHERE showtime_id=? AND status='available'
+           ORDER BY row_num, col_num""", (sid,))
+
+    if not avail:
+        return jsonify({'suggestions': []})
+
+    pos_pref  = prefs.get('seat_position_pref', 'center')
+    zone_pref = prefs.get('seat_zone_pref',     'middle')
+    avg_q     = float(prefs.get('avg_quality_pref', 7.0))
+
+    scored = []
+    for s in avail:
+        tags  = json.loads(s['position_tags']) if s['position_tags'] else []
+        q_obj = float(s['quality_score'])
+
+        pm = 1.0 if pos_pref in tags else (0.5 if 'aisle' in tags else 0.2)
+        zm = 1.0 if zone_pref in tags else 0.35
+        qm = max(0.0, 1.0 - abs(q_obj - avg_q) / 10.0)
+        q_pref = pm * 0.40 + zm * 0.30 + qm * 0.30
+
+        combined = round(q_obj * 0.60 + q_pref * 10.0 * 0.40, 4)
+
+        scored.append({
+            'id':           s['id'],
+            'row_label':    s['row_label'],
+            'seat_number':  s['seat_number'],
+            'row_num':      s['row_num'],
+            'col_num':      s['col_num'],
+            'q_obj':        round(q_obj, 2),
+            'q_pref':       round(q_pref, 4),
+            'q_pref_pct':   round(q_pref * 100),
+            'combined':     combined,
+            'position_tags': tags,
+        })
+
+    scored.sort(key=lambda x: x['combined'], reverse=True)
+
+    # Spread suggestions across different zones when possible
+    suggestions = []
+    seen_zones = set()
+    # First pass: prefer diverse zones
+    for s in scored:
+        zone = next((t for t in s['position_tags'] if t in ('front','middle','back')), 'middle')
+        if zone not in seen_zones:
+            suggestions.append(s)
+            seen_zones.add(zone)
+        if len(suggestions) == 3:
+            break
+    # Fill remaining slots from top scores if not enough zone diversity
+    for s in scored:
+        if len(suggestions) == 3:
+            break
+        if s not in suggestions:
+            suggestions.append(s)
+
+    return jsonify({'suggestions': suggestions[:3], 'personalised': user_id is not None})
+
+
 @app.route('/api/seats/lock', methods=['POST'])
 @auth_required
 def lock_seat():
