@@ -69,8 +69,7 @@ def xdb(sql, args=()):
 #  This score belongs to the SEAT, not the user.
 #  It is calculated ONCE at showtime creation and stored in seats.quality_score.
 #  It is identical for every user who looks at the same seat.
-# ═══════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════
+
 #  SCORE 1 — OBJECTIVE SEAT QUALITY  (Q_obj)
 #
 #  Derived from SMPTE EG-18-1994 (Society of Motion Picture and
