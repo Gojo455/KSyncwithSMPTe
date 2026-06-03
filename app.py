@@ -56,7 +56,7 @@ def xdb(sql, args=()):
     db = get_db(); cur = db.execute(sql, args); db.commit()
     return cur.lastrowid
 
-# ═══════════════════════════════════════════════════════════════════
+
 #  SCORE 1 — OBJECTIVE SEAT QUALITY  (Q_obj)
 #
 #  Based on:
