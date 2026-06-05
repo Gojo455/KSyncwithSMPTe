@@ -35,7 +35,7 @@ def get_db():
     if db is None:
         db = g._db = sqlite3.connect(DB_PATH)
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA journal_mode=DELETE")
         db.execute("PRAGMA foreign_keys=ON")
     return db
 
@@ -1124,6 +1124,61 @@ def admin_bookings():
 def get_halls():
     return jsonify([dict(h) for h in qdb("SELECT h.*,c.name as cinema_name FROM halls h JOIN cinemas c ON h.cinema_id=c.id")])
 
+@app.route('/api/admin/analytics')
+@admin_required
+def admin_analytics():
+    with get_db() as conn:
+        # Bookings by genre → data.genres
+        genres_raw = conn.execute("""
+            SELECT m.genre, COUNT(b.id) as bookings
+            FROM bookings b
+            JOIN showtimes st ON b.showtime_id = st.id
+            JOIN movies m ON st.movie_id = m.id
+            WHERE b.status='confirmed'
+            GROUP BY m.genre
+            ORDER BY bookings DESC
+            LIMIT 8
+        """).fetchall()
+
+        # Flatten genres (each movie has "Action · Comedy · Sci-Fi" etc.)
+        genre_counts = {}
+        for row in genres_raw:
+            for g in row['genre'].split('·'):
+                g = g.strip()
+                if g:
+                    genre_counts[g] = genre_counts.get(g, 0) + row['bookings']
+        genres = [{'label': k, 'value': v}
+                  for k, v in sorted(genre_counts.items(), key=lambda x: -x[1])[:8]]
+
+        # Bookings by movie → data.movies
+        movies_raw = conn.execute("""
+            SELECT m.title, COUNT(b.id) as bookings
+            FROM movies m
+            LEFT JOIN showtimes st ON st.movie_id = m.id
+            LEFT JOIN bookings b ON b.showtime_id = st.id AND b.status='confirmed'
+            GROUP BY m.id
+            ORDER BY bookings DESC
+            LIMIT 6
+        """).fetchall()
+        movies = [{'label': r['title'], 'value': r['bookings']} for r in movies_raw]
+
+        # Bookings by cinema → data.zones
+        zones_raw = conn.execute("""
+            SELECT c.name as zone_name, COUNT(b.id) as bookings
+            FROM cinemas c
+            LEFT JOIN halls h ON h.cinema_id = c.id
+            LEFT JOIN showtimes st ON st.hall_id = h.id
+            LEFT JOIN bookings b ON b.showtime_id = st.id AND b.status='confirmed'
+            GROUP BY c.id
+            ORDER BY bookings DESC
+        """).fetchall()
+        zones = [{'label': r['zone_name'], 'value': r['bookings']} for r in zones_raw]
+
+        return jsonify({
+            'genres': genres,
+            'movies': movies,
+            'zones':  zones,
+        })
 
 with app.app_context():
     init_db()
