@@ -337,6 +337,7 @@ async function drawSeatMap(showtimeId, soft) {
           </div>
         </div>
       </div>`;
+    if (S.user) autoSuggestSeats(seats);  // ← ONLY this line added, inside if(!soft)
   } else {
     const inner = ge('seat-inner');
     if (inner) inner.innerHTML = rowsHtml;
@@ -346,7 +347,6 @@ async function drawSeatMap(showtimeId, soft) {
 
   if (S.selectedSeat) updateSummary(S.selectedSeat, showtime.price);
 }
-
 // Seat Tooltip
 const TIP = ge('seat-tooltip');
 document.addEventListener('mousemove', e => {
@@ -392,6 +392,68 @@ async function selectSeat(seatObj) {
 
   const data = await api(`/api/seats/${S.showtimeId}`);
   if (data.showtime) updateSummary(seatObj, data.showtime.price);
+}
+
+// ─── AUTO SEAT SUGGESTION ──────────────────────────────────────────
+function autoSuggestSeats(seats) {
+  const available = seats.filter(s => s.status === 'available');
+  if (!available.length) return;
+
+  // Score each seat combining Q_obj (research quality) and Q_pref (personal match)
+  const scored = available.map(s => {
+      const qObj  = parseFloat(s.q_obj ?? s.quality_score ?? 0);
+      const qPref = s.q_pref ?? 0;
+      // Q_obj weighted 60%, Q_pref weighted 40% — mirrors backend formula
+      const combined = (qObj / 10) * 0.60 + qPref * 0.40;
+      return { ...s, _combined: combined };
+  });
+
+  // Pick top 3
+  scored.sort((a, b) => b._combined - a._combined);
+  const top3 = scored.slice(0, 3);
+
+  // Find the seat map and inject suggestion banner above it
+  const gridWrap = ge('seat-grid-wrap');
+  if (!gridWrap) return;
+
+  const existing = ge('auto-suggest-bar');
+  if (existing) existing.remove();
+
+  const bar = document.createElement('div');
+  bar.id = 'auto-suggest-bar';
+  bar.style.cssText = `
+      background: var(--surface2, #f9f5ff);
+      border: 1.5px solid var(--rose-lt, #f7dce8);
+      border-radius: 12px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.85rem;
+      font-size: 0.82rem;
+  `;
+
+  const pills = top3.map((s, i) => {
+      const tags = s.position_tags ? JSON.parse(s.position_tags) : [];
+      const q    = parseFloat(s.q_obj ?? s.quality_score).toFixed(1);
+      const pct  = s.q_pref_pct != null ? ` · ${s.q_pref_pct}% pref` : '';
+      return `<button
+          onclick="selectSeat(${JSON.stringify(s).replace(/"/g, '&quot;')})"
+          style="background:var(--rose,#c0547a);color:#fff;border:none;border-radius:8px;
+                 padding:0.3rem 0.7rem;font-size:0.78rem;font-weight:600;cursor:pointer;
+                 margin-right:0.4rem;margin-top:0.35rem;transition:opacity .2s"
+          onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">
+          #${i + 1} ${s.row_label}${s.seat_number} · ${tags.join(' ')} · ${q}/10${pct}
+      </button>`;
+  }).join('');
+
+  bar.innerHTML = `
+      <div style="font-weight:600;color:var(--text,#2a1f28);margin-bottom:0.3rem">
+          ✦ Top 3 suggested seats for you
+      </div>
+      <div style="color:var(--text2,#6e5068);margin-bottom:0.4rem;font-size:0.76rem">
+          Ranked by research quality + your personal preference history
+      </div>
+      ${pills}`;
+
+  gridWrap.insertAdjacentElement('beforebegin', bar);
 }
 
 function updateSummary(seat, price) {
