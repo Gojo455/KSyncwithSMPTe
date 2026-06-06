@@ -79,55 +79,15 @@ async function addMovie() {
 async function loadShowtimes() {
   const rows = await api('/api/admin/showtimes');
   const wrap = document.getElementById('showtimes-tbl');
-  if (!rows.length) { wrap.innerHTML = '<p>No showtimes</p>'; return; }
+  if (!rows.length) { wrap.innerHTML='<p>No showtimes</p>'; return; }
   wrap.innerHTML = `<table class="admin-table">
-    <thead><tr><th>Movie</th><th>Cinema</th><th>Hall</th><th>Date & Time</th><th>Price</th><th>Actions</th></tr></thead>
-    <tbody>${rows.map(s => `<tr id="st-row-${s.id}">
+    <thead><tr><th>Movie</th><th>Cinema</th><th>Hall</th><th>Date & Time</th><th>Price</th></tr></thead>
+    <tbody>${rows.map(s=>`<tr>
       <td><strong>${esc(s.title)}</strong></td>
-      <td>${esc(s.cinema_name)}</td>
-      <td>${esc(s.hall_name)}</td>
+      <td>${esc(s.cinema_name)}</td><td>${esc(s.hall_name)}</td>
       <td>${new Date(s.showtime).toLocaleString()}</td>
       <td>₦${Number(s.price).toLocaleString()}</td>
-      <td>
-        <button class="tbl-btn" onclick="openEditShowtime(${s.id},'${esc(s.title)}','${s.showtime}',${s.price})">Edit</button>
-        <button class="tbl-btn del" onclick="deleteShowtime(${s.id})">Delete</button>
-      </td>
     </tr>`).join('')}</tbody></table>`;
-}
-
-function openEditShowtime(id, title, showtime, price) {
-  document.getElementById('edit-st-id').value   = id;
-  document.getElementById('edit-st-label').textContent = title;
-  // Convert "2026-06-05 18:30:00" → "2026-06-05T18:30" for datetime-local input
-  document.getElementById('edit-st-time').value  = showtime.replace(' ', 'T').substring(0, 16);
-  document.getElementById('edit-st-price').value = price;
-  document.getElementById('edit-st-err').classList.add('hidden');
-  openModal('edit-showtime-modal');
-}
-
-async function saveShowtime() {
-  const id       = val('edit-st-id');
-  const showtime = val('edit-st-time').replace('T', ' ') + ':00';
-  const price    = val('edit-st-price');
-  const errEl    = document.getElementById('edit-st-err');
-  errEl.classList.add('hidden');
-  if (!showtime || !price) { showErr(errEl, 'All fields are required'); return; }
-  const r = await api(`/api/admin/showtimes/${id}`, {
-    method: 'PUT',
-    body: { showtime, price: parseFloat(price) }
-  });
-  if (r.error) { showErr(errEl, r.error); return; }
-  closeModal('edit-showtime-modal');
-  loadShowtimes();
-  toast('Showtime updated', 'success');
-}
-
-async function deleteShowtime(id) {
-  if (!confirm('Delete this showtime? All its seats and bookings will also be removed.')) return;
-  const r = await api(`/api/admin/showtimes/${id}`, { method: 'DELETE' });
-  if (r.error) { toast(r.error, 'error'); return; }
-  loadShowtimes();
-  toast('Showtime deleted', 'info');
 }
 async function prepShowtime() {
   const [movies, halls] = await Promise.all([api('/api/movies'), api('/api/halls')]);

@@ -172,20 +172,6 @@
   </main>
 </div>
 
-<!-- Edit Showtime -->
-<div class="overlay hidden" id="edit-showtime-modal" onclick="closeOverlay(event,'edit-showtime-modal')">
-  <div class="modal sm-modal">
-    <button class="close-btn" onclick="closeModal('edit-showtime-modal')">✕</button>
-    <h2 style="margin-bottom:4px">Edit Showtime</h2>
-    <p id="edit-st-label" style="font-size:.8rem;color:var(--muted);margin-bottom:1.25rem">—</p>
-    <input type="hidden" id="edit-st-id">
-    <label>Date & Time<input type="datetime-local" id="edit-st-time"/></label>
-    <label>Price (₦)<input type="number" id="edit-st-price" step="100" min="0"/></label>
-    <div id="edit-st-err" class="form-err hidden"></div>
-    <button class="btn-rose full mt" onclick="saveShowtime()">Save Changes</button>
-  </div>
-</div>
-
 <!-- Add Movie -->
 <div class="overlay hidden" id="add-movie-modal" onclick="closeOverlay(event,'add-movie-modal')">
   <div class="modal sm-modal">

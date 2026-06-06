@@ -35,7 +35,7 @@ def get_db():
     if db is None:
         db = g._db = sqlite3.connect(DB_PATH)
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=DELETE")
+        db.execute("PRAGMA journal_mode=WAL")   # WAL: allows concurrent reads alongside writes
         db.execute("PRAGMA foreign_keys=ON")
     return db
 
@@ -219,32 +219,57 @@ def get_prefs(user_id):
         'seat_zone_pref':'middle','avg_quality_pref':7.0,'booking_count':0}
 
 
+def split_genres(genre_string):
+    """
+    Split a compound genre string into individual tokens.
+    e.g. 'Action · Comedy · Superhero' → ['Action', 'Comedy', 'Superhero']
+    Used everywhere we need to compare genres so that Jaccard similarity
+    works on individual genre tokens, not useless compound strings.
+    """
+    return [g.strip() for g in genre_string.split('·') if g.strip()]
+
+
 def jaccard(a, b):
     if not a and not b: return 0.0
     return len(a & b) / len(a | b) if (a | b) else 0.0
 
 
 def collab_score(user_id, movie_id):
-    """Jaccard-based collaborative filtering on genre booking history."""
-    user_genres = set(r['genre'] for r in qdb(
+    """
+    Jaccard-based collaborative filtering on genre booking history.
+    FIX: Now tokenises compound genre strings ('Action · Comedy') into
+    individual genres before computing similarity, so that partial genre
+    overlaps are detected correctly instead of requiring exact compound matches.
+    """
+    # Build this user's genre set from confirmed booking history
+    raw_user = qdb(
         """SELECT DISTINCT m.genre FROM bookings b
            JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id
-           WHERE b.user_id=? AND b.status='confirmed'""", (user_id,)))
+           WHERE b.user_id=? AND b.status='confirmed'""", (user_id,))
+    user_genres = set(g for r in raw_user for g in split_genres(r['genre']))
+
     tgt = qdb("SELECT genre FROM movies WHERE id=?", (movie_id,), one=True)
     if not tgt: return 0.0
-    others = qdb(
+    tgt_genres = set(split_genres(tgt['genre']))
+
+    # Find peer users who have booked ANY movie sharing at least one genre token
+    # with the target movie. This is broader than the old exact-string match.
+    all_other_users = qdb(
         """SELECT DISTINCT b.user_id FROM bookings b
            JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id
-           WHERE b.user_id!=? AND m.genre=? AND b.status='confirmed'""",
-        (user_id, tgt['genre']))
-    if not others: return 0.0
+           WHERE b.user_id!=? AND b.status='confirmed'""", (user_id,))
+
     sims = []
-    for o in others:
-        og = set(r['genre'] for r in qdb(
+    for o in all_other_users:
+        raw_peer = qdb(
             """SELECT DISTINCT m.genre FROM bookings b
                JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id
-               WHERE b.user_id=? AND b.status='confirmed'""", (o['user_id'],)))
-        sims.append(jaccard(user_genres, og))
+               WHERE b.user_id=? AND b.status='confirmed'""", (o['user_id'],))
+        peer_genres = set(g for r in raw_peer for g in split_genres(r['genre']))
+        # Only include peers who share at least one genre with the target movie
+        if peer_genres & tgt_genres:
+            sims.append(jaccard(user_genres, peer_genres))
+
     return min(sum(sims)/len(sims)*1.5, 1.0) if sims else 0.0
 
 
@@ -279,7 +304,11 @@ def recommend(user_id, limit=12):
         if avail_ratio == 0: continue
 
         # 1. Content-based genre score
-        genre_s = min(gw.get(st['genre'], 0.0), 1.0)
+        # FIX: tokenise the compound genre string and take the MAX weight
+        # across all individual genres the movie belongs to.
+        # e.g. 'Action · Comedy' checks both 'Action' and 'Comedy' weights.
+        movie_genres = split_genres(st['genre'])
+        genre_s = min(max((gw.get(g, 0.0) for g in movie_genres), default=0.0), 1.0)
 
         #  2. Collaborative
         collab  = collab_score(user_id, mid)
@@ -353,7 +382,10 @@ def learn_preferences(user_id, movie_id, seat_id):
     if prefs:
         gw = json.loads(prefs['genre_weights'])
         alpha = 0.3
-        gw[movie['genre']] = round(alpha + (1-alpha)*gw.get(movie['genre'],0.0), 4)
+        # FIX: update weight for every individual genre token in the movie's
+        # compound genre string, not just the whole compound string as one key.
+        for g in split_genres(movie['genre']):
+            gw[g] = round(alpha + (1 - alpha) * gw.get(g, 0.0), 4)
         beta = 0.25
         new_avg_q = (1-beta)*float(prefs['avg_quality_pref']) + beta*float(seat['quality_score'])
         db.execute(
@@ -362,7 +394,8 @@ def learn_preferences(user_id, movie_id, seat_id):
                WHERE user_id=?""",
             (json.dumps(gw), new_pos, new_zone, round(new_avg_q,2), user_id))
     else:
-        gw = {movie['genre']: 0.5}
+        # New user — seed genre weights for every token in this movie's genre
+        gw = {g: 0.5 for g in split_genres(movie['genre'])}
         db.execute(
             """INSERT INTO user_preferences
                (user_id,genre_weights,seat_position_pref,seat_zone_pref,avg_quality_pref,booking_count)
@@ -412,7 +445,16 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL, is_admin INTEGER DEFAULT 0,
+        is_verified INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS email_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token TEXT NOT NULL,
+        verified INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
     );
     CREATE TABLE IF NOT EXISTS movies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -643,11 +685,63 @@ def seed(db):
                     (stid, hid, r, c, RL[r-1], c, q,
                      json.dumps(tags), status))
 
-    # Admin + demo users
-    db.execute("INSERT OR IGNORE INTO users (username,email,password_hash,is_admin) VALUES (?,?,?,?)",
-               ("admin","admin@ksync.ng", hash_pw("admin123"), 1))
-    db.execute("INSERT OR IGNORE INTO users (username,email,password_hash,is_admin) VALUES (?,?,?,?)",
-               ("demo","demo@ksync.ng", hash_pw("demo123"), 0))
+    # Admin + demo users (pre-verified so they work without the email flow)
+    db.execute("INSERT OR IGNORE INTO users (username,email,password_hash,is_admin,is_verified) VALUES (?,?,?,?,?)",
+               ("admin","admin@ksync.ng", hash_pw("admin123"), 1, 1))
+    db.execute("INSERT OR IGNORE INTO users (username,email,password_hash,is_admin,is_verified) VALUES (?,?,?,?,?)",
+               ("demo","demo@ksync.ng", hash_pw("demo123"), 0, 1))
+    db.commit()
+
+    # ── SYNTHETIC PEER USERS ────────────────────────────────────────────────
+    # These five users exist purely to give the collaborative filter enough
+    # peer booking history to produce non-zero Jaccard similarity scores.
+    # Without them the collab component is silent for a freshly seeded DB.
+    # Each user has a distinct genre profile so similarity values are varied.
+    synthetic = [
+        ("peer_action",  "p1@ksync.ng", ["Action", "Superhero", "Adventure"]),
+        ("peer_comedy",  "p2@ksync.ng", ["Comedy", "Animation", "Family"]),
+        ("peer_drama",   "p3@ksync.ng", ["Drama", "History", "Musical"]),
+        ("peer_horror",  "p4@ksync.ng", ["Horror", "Thriller", "Sci-Fi"]),
+        ("peer_mixed",   "p5@ksync.ng", ["Action", "Comedy", "Drama", "Sci-Fi"]),
+    ]
+
+    all_shows = db.execute(
+        "SELECT s.id as sid, m.genre as mgenre, m.id as mid "
+        "FROM showtimes s JOIN movies m ON s.movie_id=m.id"
+    ).fetchall()
+
+    for uname, email, liked_genres in synthetic:
+        cur = db.execute(
+            "INSERT OR IGNORE INTO users (username,email,password_hash,is_admin,is_verified) VALUES (?,?,?,?,?)",
+            (uname, email, hash_pw("peer123"), 0, 1)
+        )
+        uid = cur.lastrowid
+        if not uid:  # already inserted on a re-seed
+            row = db.execute("SELECT id FROM users WHERE username=?", (uname,)).fetchone()
+            uid = row[0]
+
+        booked_movies = set()
+        for show in random.sample(list(all_shows), min(8, len(all_shows))):
+            show_genres = [g.strip() for g in show['mgenre'].split('·') if g.strip()]
+            if not any(g in liked_genres for g in show_genres):
+                continue
+            if show['mid'] in booked_movies:
+                continue
+            avail = db.execute(
+                "SELECT id FROM seats WHERE showtime_id=? AND status='available' LIMIT 1",
+                (show['sid'],)
+            ).fetchone()
+            if not avail:
+                continue
+            db.execute(
+                "INSERT INTO bookings (user_id,showtime_id,seat_id,amount,status,payment_ref) "
+                "VALUES (?,?,?,?,?,?)",
+                (uid, show['sid'], avail[0], 3000, 'confirmed', f"SEED-{uid}-{show['sid']}")
+            )
+            db.execute("UPDATE seats SET status='booked' WHERE id=?", (avail[0],))
+            booked_movies.add(show['mid'])
+            learn_preferences(uid, show['mid'], avail[0])
+
     db.commit()
 
 # Page Routes
@@ -664,14 +758,55 @@ def admin():
 @app.route('/api/register', methods=['POST'])
 def register():
     d = request.get_json()
-    u,e,p = d.get('username','').strip(), d.get('email','').strip().lower(), d.get('password','')
-    if not u or not e or not p: return jsonify({'error':'All fields required'}), 400
-    if len(p) < 6: return jsonify({'error':'Password min 6 characters'}), 400
-    if qdb("SELECT id FROM users WHERE username=? OR email=?", (u,e), one=True):
-        return jsonify({'error':'Username or email already exists'}), 409
-    uid = xdb("INSERT INTO users (username,email,password_hash) VALUES (?,?,?)", (u,e,hash_pw(p)))
-    session.update({'user_id':uid,'username':u,'is_admin':False})
-    return jsonify({'success':True,'username':u})
+    u, e, p = d.get('username','').strip(), d.get('email','').strip().lower(), d.get('password','')
+    if not u or not e or not p:
+        return jsonify({'error': 'All fields required'}), 400
+    if len(p) < 6:
+        return jsonify({'error': 'Password min 6 characters'}), 400
+    if qdb("SELECT id FROM users WHERE username=? OR email=?", (u, e), one=True):
+        return jsonify({'error': 'Username or email already exists'}), 409
+
+    uid = xdb(
+        "INSERT INTO users (username,email,password_hash,is_verified) VALUES (?,?,?,?)",
+        (u, e, hash_pw(p), 0)
+    )
+    # Generate email verification token
+    token = secrets.token_urlsafe(32)
+    xdb("INSERT INTO email_verifications (user_id,token) VALUES (?,?)", (uid, token))
+
+    session.update({'user_id': uid, 'username': u, 'is_admin': False})
+
+    # NOTE: In production, send `token` via SMTP (SendGrid / AWS SES).
+    # For this demo deployment, the token is returned in the response
+    # so it can be verified immediately without an email server.
+    return jsonify({
+        'success': True,
+        'username': u,
+        'verification_token': token,
+        'message': 'Account created. Use the verification token to confirm your email.'
+    })
+
+
+@app.route('/api/verify-email', methods=['POST'])
+def verify_email():
+    """
+    Accepts the verification token returned at registration (or sent via email
+    in production) and marks the user account as verified.
+    """
+    token = (request.get_json() or {}).get('token', '').strip()
+    if not token:
+        return jsonify({'error': 'Token required'}), 400
+    record = qdb(
+        "SELECT * FROM email_verifications WHERE token=? AND verified=0",
+        (token,), one=True
+    )
+    if not record:
+        return jsonify({'error': 'Invalid or already-used token'}), 400
+    db = get_db()
+    db.execute("UPDATE users SET is_verified=1 WHERE id=?", (record['user_id'],))
+    db.execute("UPDATE email_verifications SET verified=1 WHERE id=?", (record['id'],))
+    db.commit()
+    return jsonify({'success': True, 'message': 'Email verified successfully'})
 
 
 @app.route('/api/login', methods=['POST'])
