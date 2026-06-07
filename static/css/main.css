@@ -878,3 +878,8 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 
 /* ── Two-score tooltip ──────────────────────────────────────────────────── */
 #seat-tooltip { line-height: 1.65; }
+
+@keyframes suggestFadeIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

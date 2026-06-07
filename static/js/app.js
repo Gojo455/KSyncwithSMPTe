@@ -266,6 +266,7 @@ async function drawSeatMap(showtimeId, soft) {
   const data = await api(`/api/seats/${showtimeId}`);
   if (!data || data.error) return;
   const { seats, showtime } = data;
+  console.log('SEATS SAMPLE:', seats.slice(0,2), 'USER:', S.user);
 
   const rows = {};
   seats.forEach(s => { (rows[s.row_num] = rows[s.row_num]||[]).push(s); });
@@ -337,7 +338,7 @@ async function drawSeatMap(showtimeId, soft) {
           </div>
         </div>
       </div>`;
-      if (S.user) autoSuggestSeats(seats);  // top-3 suggestion banner
+      if (S.user) setTimeout(() => autoSuggestSeats(seats), 0);  // top-3 suggestion banner
   } else {
     const inner = ge('seat-inner');
     if (inner) inner.innerHTML = rowsHtml;
@@ -376,7 +377,8 @@ function autoSuggestSeats(seats) {
   const available = seats.filter(s => s.status === 'available');
   if (!available.length) return;
 
-  const gridWrap = ge('seat-grid-wrap');
+  const gridWrap = document.querySelector('.seat-grid-wrap');
+  console.log('gridWrap:', gridWrap); // temporary debug
   if (!gridWrap) return;
 
   // Score each seat: Q_obj 60% + Q_pref 40%
@@ -397,32 +399,51 @@ function autoSuggestSeats(seats) {
   const bar = document.createElement('div');
   bar.id = 'auto-suggest-bar';
   bar.style.cssText = [
-    'background:var(--surface2,#f9f5ff)',
-    'border:1.5px solid var(--rose-dim,#f7dce8)',
-    'border-radius:12px',
-    'padding:0.75rem 1rem',
-    'margin-bottom:0.85rem',
-    'font-size:0.82rem',
+    'background: linear-gradient(135deg, #fff5f8, #fdf0ff)',
+    'border: 2px solid var(--rose, #c96b7a)',
+    'border-radius: 16px',
+    'padding: 1rem 1.2rem',
+    'margin-bottom: 1rem',
+    'box-shadow: 0 4px 18px rgba(201,107,122,0.15)',
+    'font-size: 0.82rem',
+    'animation: suggestFadeIn 0.4s ease',
   ].join(';');
 
   const pillsHtml = top3.map((s, i) => {
     const tags = s.position_tags ? JSON.parse(s.position_tags) : [];
     const q    = parseFloat(s.q_obj ?? s.quality_score).toFixed(1);
-    const pct  = s.q_pref_pct != null ? ` · ${s.q_pref_pct}% pref` : '';
+    const pct  = s.q_pref_pct != null ? ` · ${s.q_pref_pct}% match` : '';
+    const medals = ['🥇', '🥈', '🥉'];
     return `<button class="suggest-pill" data-idx="${i}"
-      style="background:var(--rose,#c96b7a);color:#fff;border:none;border-radius:8px;
-             padding:0.3rem 0.8rem;font-size:0.78rem;font-weight:600;cursor:pointer;
-             margin-right:0.4rem;margin-top:0.35rem">
-      #${i + 1} ${s.row_label}${s.seat_number} · ${tags.join(' ')} · ${q}/10${pct}
+      style="background: linear-gradient(135deg, #c96b7a, #a0547a);
+             color:#fff; border:none; border-radius:20px;
+             padding: 0.45rem 1rem; font-size:0.8rem; font-weight:600;
+             cursor:pointer; margin-right:0.5rem; margin-top:0.45rem;
+             box-shadow: 0 2px 8px rgba(201,107,122,0.3);
+             transition: transform 0.15s, box-shadow 0.15s;
+             display:inline-flex; align-items:center; gap:0.3rem"
+      onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 14px rgba(201,107,122,0.45)'"
+      onmouseout="this.style.transform='';this.style.boxShadow='0 2px 8px rgba(201,107,122,0.3)'">
+      ${medals[i]} ${s.row_label}${s.seat_number} · ${tags.join(' ')} · ${q}/10${pct}
     </button>`;
   }).join('');
 
+
+
+  
+
   bar.innerHTML = `
-    <div style="font-weight:600;color:var(--text,#2d1f1a);margin-bottom:0.25rem">
-      ✦ Top 3 suggested seats for you
+    <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem">
+      <span style="font-size:1.1rem">✦</span>
+      <span style="font-weight:700; font-size:0.95rem; color:var(--rose,#c96b7a)">
+        Top 3 Suggested Seats For You
+      </span>
+      <span style="margin-left:auto; background:var(--rose,#c96b7a); color:#fff;
+                   font-size:0.62rem; font-weight:700; padding:2px 8px;
+                   border-radius:20px; letter-spacing:0.5px">AI PICK</span>
     </div>
-    <div style="color:var(--text2,#7a5c52);font-size:0.76rem;margin-bottom:0.4rem">
-      Ranked by research quality + your personal preference history
+    <div style="color:#7a5c52; font-size:0.76rem; margin-bottom:0.6rem; padding-left:1.6rem">
+      Ranked by cinema research standards + your personal seating history
     </div>
     ${pillsHtml}`;
 
