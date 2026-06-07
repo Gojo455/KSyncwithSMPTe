@@ -337,6 +337,7 @@ async function drawSeatMap(showtimeId, soft) {
           </div>
         </div>
       </div>`;
+      if (S.user) autoSuggestSeats(seats);  // top-3 suggestion banner
   } else {
     const inner = ge('seat-inner');
     if (inner) inner.innerHTML = rowsHtml;
@@ -370,6 +371,71 @@ function showTip(e, label, qObj, tags, status, qPrefPct) {
   TIP.style.top  = (e.clientY - 36) + 'px';
 }
 function hideTip() { if (TIP) TIP.classList.remove('show'); }
+
+function autoSuggestSeats(seats) {
+  const available = seats.filter(s => s.status === 'available');
+  if (!available.length) return;
+
+  const gridWrap = ge('seat-grid-wrap');
+  if (!gridWrap) return;
+
+  // Score each seat: Q_obj 60% + Q_pref 40%
+  const scored = available.map(s => {
+    const qObj  = parseFloat(s.q_obj ?? s.quality_score ?? 0);
+    const qPref = s.q_pref ?? 0;
+    return { ...s, _combined: (qObj / 10) * 0.60 + qPref * 0.40 };
+  });
+  scored.sort((a, b) => b._combined - a._combined);
+  const top3 = scored.slice(0, 3);
+
+  // Store on window — avoids JSON serialisation inside onclick attributes
+  window._suggestedSeats = top3;
+
+  const existing = ge('auto-suggest-bar');
+  if (existing) existing.remove();
+
+  const bar = document.createElement('div');
+  bar.id = 'auto-suggest-bar';
+  bar.style.cssText = [
+    'background:var(--surface2,#f9f5ff)',
+    'border:1.5px solid var(--rose-dim,#f7dce8)',
+    'border-radius:12px',
+    'padding:0.75rem 1rem',
+    'margin-bottom:0.85rem',
+    'font-size:0.82rem',
+  ].join(';');
+
+  const pillsHtml = top3.map((s, i) => {
+    const tags = s.position_tags ? JSON.parse(s.position_tags) : [];
+    const q    = parseFloat(s.q_obj ?? s.quality_score).toFixed(1);
+    const pct  = s.q_pref_pct != null ? ` · ${s.q_pref_pct}% pref` : '';
+    return `<button class="suggest-pill" data-idx="${i}"
+      style="background:var(--rose,#c96b7a);color:#fff;border:none;border-radius:8px;
+             padding:0.3rem 0.8rem;font-size:0.78rem;font-weight:600;cursor:pointer;
+             margin-right:0.4rem;margin-top:0.35rem">
+      #${i + 1} ${s.row_label}${s.seat_number} · ${tags.join(' ')} · ${q}/10${pct}
+    </button>`;
+  }).join('');
+
+  bar.innerHTML = `
+    <div style="font-weight:600;color:var(--text,#2d1f1a);margin-bottom:0.25rem">
+      ✦ Top 3 suggested seats for you
+    </div>
+    <div style="color:var(--text2,#7a5c52);font-size:0.76rem;margin-bottom:0.4rem">
+      Ranked by research quality + your personal preference history
+    </div>
+    ${pillsHtml}`;
+
+  // Event delegation — no JSON in onclick attributes
+  bar.querySelectorAll('.suggest-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const seat = window._suggestedSeats[parseInt(btn.dataset.idx)];
+      if (seat) selectSeat(seat);
+    });
+  });
+
+  gridWrap.insertAdjacentElement('beforebegin', bar);
+}
 
 async function selectSeat(seatObj) {
   if (!S.user) { closeSeatModal(); openModal('login-modal'); return; }

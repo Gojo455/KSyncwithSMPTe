@@ -1243,6 +1243,44 @@ def admin_showtimes():
     rows = qdb("SELECT s.*,m.title FROM showtimes s JOIN movies m ON s.movie_id=m.id ORDER BY s.showtime DESC LIMIT 60")
     return jsonify([dict(r) for r in rows])
 
+@app.route('/api/admin/showtimes/<int:sid>', methods=['PUT', 'DELETE'])
+@admin_required
+def admin_showtime_detail(sid):
+    if request.method == 'DELETE':
+        xdb("DELETE FROM seats WHERE showtime_id=?", (sid,))
+        xdb("DELETE FROM bookings WHERE showtime_id=?", (sid,))
+        xdb("DELETE FROM showtimes WHERE id=?", (sid,))
+        return jsonify({'success': True})
+    # PUT — edit
+    d = request.get_json()
+    showtime = d.get('showtime')
+    price    = d.get('price')
+    if not showtime or price is None:
+        return jsonify({'error': 'showtime and price are required'}), 400
+    st = qdb("SELECT * FROM showtimes WHERE id=?", (sid,), one=True)
+    if not st:
+        return jsonify({'error': 'Showtime not found'}), 404
+    # Conflict check — exclude current showtime
+    conflict = qdb("""
+        SELECT s.id, m.title, s.showtime, m.duration_min
+        FROM showtimes s JOIN movies m ON s.movie_id = m.id
+        WHERE s.hall_id = ?
+          AND s.id != ?
+          AND datetime(s.showtime, '+' || m.duration_min || ' minutes') > datetime(?)
+          AND datetime(s.showtime) < datetime(?, '+' || (
+                SELECT duration_min FROM movies WHERE id=?
+              ) || ' minutes')
+    """, (st['hall_id'], sid, showtime, showtime, st['movie_id']), one=True)
+    if conflict:
+        return jsonify({
+            'error': f"Hall conflict: \"{conflict['title']}\" runs at "
+                     f"{conflict['showtime']} ({conflict['duration_min']} min). "
+                     f"Choose a different time."
+        }), 409
+    xdb("UPDATE showtimes SET showtime=?, price=? WHERE id=?",
+        (showtime, float(price), sid))
+    return jsonify({'success': True})
+
 @app.route('/api/admin/bookings')
 @admin_required
 def admin_bookings():
