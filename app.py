@@ -31,12 +31,10 @@ PAYSTACK_PUBLIC_KEY = os.environ.get('PAYSTACK_PUBLIC_KEY', 'pk_test_b695c7bf0b5
 
 
 def get_db():
-    db = getattr(g, '_db', None)
-    if db is None:
-        db = g._db = sqlite3.connect(DB_PATH)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")   # WAL: allows concurrent reads alongside writes
-        db.execute("PRAGMA foreign_keys=ON")
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=DELETE")  # WAL causes locking on Render's filesystem
+    db.execute("PRAGMA foreign_keys=ON")
     return db
 
 
@@ -368,13 +366,17 @@ def recommend(user_id, limit=12):
     return sorted(scored.values(), key=lambda x: x['score'], reverse=True)[:limit]
 
 
-def learn_preferences(user_id, movie_id, seat_id):
+def learn_preferences(user_id, movie_id, seat_id, db=None):
     """Implicit preference learning after each confirmed booking."""
-    movie = qdb("SELECT genre FROM movies WHERE id=?", (movie_id,), one=True)
-    seat  = qdb("SELECT * FROM seats WHERE id=?", (seat_id,), one=True)
+    own_db = db is None
+    if own_db:
+        db = get_db()
+    
+    movie = db.execute("SELECT genre FROM movies WHERE id=?", (movie_id,)).fetchone()
+    seat  = db.execute("SELECT * FROM seats WHERE id=?", (seat_id,)).fetchone()
     if not movie or not seat: return
-    db = get_db()
-    prefs = qdb("SELECT * FROM user_preferences WHERE user_id=?", (user_id,), one=True)
+    
+    prefs = db.execute("SELECT * FROM user_preferences WHERE user_id=?", (user_id,)).fetchone()
     tags = json.loads(seat['position_tags']) if seat['position_tags'] else []
     new_pos  = 'center' if 'center' in tags else ('aisle' if 'aisle' in tags else 'edge')
     new_zone = 'middle' if 'middle' in tags else ('front' if 'front' in tags else 'back')
@@ -382,26 +384,24 @@ def learn_preferences(user_id, movie_id, seat_id):
     if prefs:
         gw = json.loads(prefs['genre_weights'])
         alpha = 0.3
-        # FIX: update weight for every individual genre token in the movie's
-        # compound genre string, not just the whole compound string as one key.
-        for g in split_genres(movie['genre']):
-            gw[g] = round(alpha + (1 - alpha) * gw.get(g, 0.0), 4)
+        gw[movie['genre']] = round(alpha + (1 - alpha) * gw.get(movie['genre'], 0.0), 4)
         beta = 0.25
-        new_avg_q = (1-beta)*float(prefs['avg_quality_pref']) + beta*float(seat['quality_score'])
+        new_avg_q = (1 - beta) * float(prefs['avg_quality_pref']) + beta * float(seat['quality_score'])
         db.execute(
-            """UPDATE user_preferences SET genre_weights=?,seat_position_pref=?,
-               seat_zone_pref=?,avg_quality_pref=?,booking_count=booking_count+1
+            """UPDATE user_preferences SET genre_weights=?, seat_position_pref=?,
+               seat_zone_pref=?, avg_quality_pref=?, booking_count=booking_count+1
                WHERE user_id=?""",
-            (json.dumps(gw), new_pos, new_zone, round(new_avg_q,2), user_id))
+            (json.dumps(gw), new_pos, new_zone, round(new_avg_q, 2), user_id))
     else:
-        # New user — seed genre weights for every token in this movie's genre
-        gw = {g: 0.5 for g in split_genres(movie['genre'])}
+        gw = {movie['genre']: 0.5}
         db.execute(
             """INSERT INTO user_preferences
-               (user_id,genre_weights,seat_position_pref,seat_zone_pref,avg_quality_pref,booking_count)
+               (user_id, genre_weights, seat_position_pref, seat_zone_pref, avg_quality_pref, booking_count)
                VALUES (?,?,?,?,?,?)""",
             (user_id, json.dumps(gw), new_pos, new_zone, float(seat['quality_score']), 1))
-    db.commit()
+    
+    if own_db:
+        db.commit()
 
 #  Auth Helpers
 
@@ -740,7 +740,7 @@ def seed(db):
             )
             db.execute("UPDATE seats SET status='booked' WHERE id=?", (avail[0],))
             booked_movies.add(show['mid'])
-            learn_preferences(uid, show['mid'], avail[0])
+            learn_preferences(uid, show['mid'], avail[0], db=db)
 
     db.commit()
 
@@ -1161,6 +1161,7 @@ def verify_booking():
     db.commit()
     st = qdb("SELECT movie_id FROM showtimes WHERE id=?", (booking['showtime_id'],), one=True)
     if st: learn_preferences(session['user_id'], st['movie_id'], booking['seat_id'])
+    
     det = qdb(
         """SELECT b.*,m.title,m.poster_url,s.showtime,s.hall_name,s.cinema_name,s.price,
                   se.row_label,se.seat_number,se.quality_score,se.position_tags
