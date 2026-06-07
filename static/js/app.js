@@ -71,11 +71,11 @@ async function register() {
   if (!username || !email || !password) { showErr(errEl, 'All fields required'); return; }
   if (password.length < 6) { showErr(errEl, 'Password must be at least 6 characters'); return; }
   const r = await api('/api/register', { method: 'POST', body: { username, email, password } });
-  if (r.error) { showErr(errEl, r.error); return; }  // server returns "Username or email already exists"
-  setUser(r);
-  closeModal('register-modal');
+  if (r.error) { showErr(errEl, r.error); return; }
   ge('reg-user').value = ''; ge('reg-email').value = ''; ge('reg-pass').value = '';
-  toast('Account created! Welcome ✦', 'success');
+  closeModal('register-modal');
+  toast('Account created! Please sign in to continue ✦', 'success');
+  setTimeout(() => openModal('login-modal'), 400);
 }
 
 async function logout() {

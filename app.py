@@ -774,7 +774,6 @@ def register():
     token = secrets.token_urlsafe(32)
     xdb("INSERT INTO email_verifications (user_id,token) VALUES (?,?)", (uid, token))
 
-    session.update({'user_id': uid, 'username': u, 'is_admin': False})
 
     # NOTE: In production, send `token` via SMTP (SendGrid / AWS SES).
     # For this demo deployment, the token is returned in the response
@@ -1222,27 +1221,55 @@ def admin_movie(mid):
         (d['title'],d['genre'],d.get('description'),d.get('duration_min',120),d.get('rating',7),d.get('poster_url'),d.get('director'),d.get('is_active',1),mid))
     return jsonify({'success':True})
 
-@app.route('/api/admin/showtimes', methods=['GET','POST'])
+@app.route('/api/admin/showtimes', methods=['GET', 'POST'])
 @admin_required
 def admin_showtimes():
     if request.method == 'POST':
         d = request.get_json()
-        hall = qdb("SELECT h.*,c.name as cname FROM halls h JOIN cinemas c ON h.cinema_id=c.id WHERE h.id=?", (d['hall_id'],), one=True)
-        if not hall: return jsonify({'error':'Hall not found'}), 404
-        stid = xdb("INSERT INTO showtimes (movie_id,hall_id,hall_name,cinema_name,showtime,price) VALUES (?,?,?,?,?,?)",
-                   (d['movie_id'],d['hall_id'],hall['name'],hall['cname'],d['showtime'],d['price']))
-        db = get_db(); RL='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        for r in range(1,hall['total_rows']+1):
-            for c in range(1,hall['total_cols']+1):
-                q = compute_seat_quality(r,c,hall['total_rows'],hall['total_cols'])
-                tags = classify_seat(r,c,hall['total_rows'],hall['total_cols'])
-                db.execute("INSERT INTO seats (showtime_id,hall_id,row_num,col_num,row_label,seat_number,quality_score,position_tags,status) VALUES (?,?,?,?,?,?,?,?,?)",
-                           (stid,hall['id'],r,c,RL[r-1],c,q,json.dumps(tags),'available'))
+        hall = qdb("SELECT h.*,c.name as cname FROM halls h JOIN cinemas c ON h.cinema_id=c.id WHERE h.id=?",
+                   (d['hall_id'],), one=True)
+        if not hall:
+            return jsonify({'error': 'Hall not found'}), 404
+
+        # Conflict check — block overlapping showtimes in same hall
+        conflict = qdb("""
+            SELECT s.id, m.title, s.showtime, m.duration_min
+            FROM showtimes s JOIN movies m ON s.movie_id = m.id
+            WHERE s.hall_id = ?
+              AND datetime(s.showtime, '+' || m.duration_min || ' minutes') > datetime(?)
+              AND datetime(s.showtime) < datetime(?, '+' || (
+                    SELECT duration_min FROM movies WHERE id=?
+                  ) || ' minutes')
+        """, (d['hall_id'], d['showtime'], d['showtime'], d['movie_id']), one=True)
+
+        if conflict:
+            return jsonify({
+                'error': f"Hall conflict: \"{conflict['title']}\" is already scheduled at "
+                         f"{conflict['showtime']} and runs for {conflict['duration_min']} min. "
+                         f"Please choose a different time or hall."
+            }), 409
+
+        stid = xdb(
+            "INSERT INTO showtimes (movie_id,hall_id,hall_name,cinema_name,showtime,price) VALUES (?,?,?,?,?,?)",
+            (d['movie_id'], d['hall_id'], hall['name'], hall['cname'], d['showtime'], d['price'])
+        )
+        db = get_db()
+        RL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        for r in range(1, hall['total_rows'] + 1):
+            for c in range(1, hall['total_cols'] + 1):
+                q    = compute_seat_quality(r, c, hall['total_rows'], hall['total_cols'])
+                tags = classify_seat(r, c, hall['total_rows'], hall['total_cols'])
+                db.execute(
+                    "INSERT INTO seats (showtime_id,hall_id,row_num,col_num,row_label,seat_number,quality_score,position_tags,status) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (stid, hall['id'], r, c, RL[r-1], c, q, json.dumps(tags), 'available')
+                )
         db.commit()
-        return jsonify({'success':True,'showtime_id':stid})
+        return jsonify({'success': True, 'showtime_id': stid})
+
     rows = qdb("SELECT s.*,m.title FROM showtimes s JOIN movies m ON s.movie_id=m.id ORDER BY s.showtime DESC LIMIT 60")
     return jsonify([dict(r) for r in rows])
 
+# For editing showtimw
 @app.route('/api/admin/showtimes/<int:sid>', methods=['PUT', 'DELETE'])
 @admin_required
 def admin_showtime_detail(sid):
@@ -1251,16 +1278,19 @@ def admin_showtime_detail(sid):
         xdb("DELETE FROM bookings WHERE showtime_id=?", (sid,))
         xdb("DELETE FROM showtimes WHERE id=?", (sid,))
         return jsonify({'success': True})
-    # PUT — edit
+
+    # PUT — edit existing showtime
     d = request.get_json()
     showtime = d.get('showtime')
     price    = d.get('price')
     if not showtime or price is None:
         return jsonify({'error': 'showtime and price are required'}), 400
+
     st = qdb("SELECT * FROM showtimes WHERE id=?", (sid,), one=True)
     if not st:
         return jsonify({'error': 'Showtime not found'}), 404
-    # Conflict check — exclude current showtime
+
+    # Conflict check — exclude the showtime being edited
     conflict = qdb("""
         SELECT s.id, m.title, s.showtime, m.duration_min
         FROM showtimes s JOIN movies m ON s.movie_id = m.id
@@ -1271,12 +1301,14 @@ def admin_showtime_detail(sid):
                 SELECT duration_min FROM movies WHERE id=?
               ) || ' minutes')
     """, (st['hall_id'], sid, showtime, showtime, st['movie_id']), one=True)
+
     if conflict:
         return jsonify({
-            'error': f"Hall conflict: \"{conflict['title']}\" runs at "
-                     f"{conflict['showtime']} ({conflict['duration_min']} min). "
-                     f"Choose a different time."
+            'error': f"Hall conflict: \"{conflict['title']}\" is already scheduled at "
+                     f"{conflict['showtime']} and runs for {conflict['duration_min']} min. "
+                     f"Please choose a different time."
         }), 409
+
     xdb("UPDATE showtimes SET showtime=?, price=? WHERE id=?",
         (showtime, float(price), sid))
     return jsonify({'success': True})
