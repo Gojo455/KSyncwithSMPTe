@@ -17,7 +17,7 @@ TURSO_TOKEN = os.environ.get('TURSO_AUTH_TOKEN')
 USE_TURSO   = bool(TURSO_URL and TURSO_TOKEN)
 
 if USE_TURSO:
-    import libsql_experimental as libsql
+    import libsql
 else:
     import sqlite3
 # ─────────────────────────────────────────────────────────────────────────────
@@ -65,11 +65,12 @@ def get_db():
     """One connection per request, stored on Flask g."""
     if '_db' not in g:
         if USE_TURSO:
+            # CHANGE TO:
             g._db = libsql.connect(
-                database   = "replica.db",   # local replica (ephemeral is fine)
-                sync_url   = TURSO_URL,
-                auth_token = TURSO_TOKEN,
-            )
+    TURSO_URL,
+    auth_token = TURSO_TOKEN,
+          )
+
             g._db.sync()   # pull latest data from Turso on open
         else:
             g._db = sqlite3.connect(DB_PATH)
@@ -486,10 +487,10 @@ def admin_required(f):
 def init_db():
     if USE_TURSO:
         db = libsql.connect(
-            database   = "replica.db",
-            sync_url   = TURSO_URL,
-            auth_token = TURSO_TOKEN,
+    TURSO_URL,
+    auth_token = TURSO_TOKEN,
         )
+        
         db.sync()
     else:
         db = sqlite3.connect(DB_PATH)
