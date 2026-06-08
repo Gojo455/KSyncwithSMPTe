@@ -413,8 +413,38 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
   transform:scale(1.18);border-color:var(--rose);
   background:var(--rose-dim);box-shadow:0 0 10px var(--rose-glow);
 }
-.seat.booked{background:rgba(0,0,0,0.05);border-color:transparent;opacity:0.3;cursor:not-allowed}
-[data-theme="dark"] .seat.booked{background:rgba(255,255,255,0.04)}
+.seat.booked{
+  background:rgba(201,80,80,0.12);
+  border-color:rgba(201,80,80,0.35);
+  cursor:not-allowed;
+  opacity:0.85;
+  overflow:hidden;
+}
+/* Diagonal cross lines for booked seats */
+.seat.booked::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  background:
+    linear-gradient(
+      135deg,
+      transparent 42%,
+      rgba(201,80,80,0.55) 42%,
+      rgba(201,80,80,0.55) 58%,
+      transparent 58%
+    ),
+    linear-gradient(
+      45deg,
+      transparent 42%,
+      rgba(201,80,80,0.55) 42%,
+      rgba(201,80,80,0.55) 58%,
+      transparent 58%
+    );
+  border-radius:inherit;
+}
+/* Hide the seat-back nub on booked seats */
+.seat.booked::after{opacity:0}
+[data-theme="dark"] .seat.booked{background:rgba(201,80,80,0.18);border-color:rgba(201,80,80,0.45)}
 .seat.locked{background:rgba(196,154,60,0.1);border-color:rgba(196,154,60,0.3);cursor:not-allowed}
 .seat.my-lock{background:var(--gold-dim);border-color:var(--gold);box-shadow:0 0 10px var(--gold-dim);cursor:default}
 .seat.selected{
@@ -431,7 +461,14 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .ld-mid{background:rgba(196,154,60,0.14);border-color:rgba(196,154,60,0.3)}
 .ld-low{background:var(--surface2);border-color:var(--border2)}
 .ld-sel{background:var(--rose)}
-.ld-bkd{background:rgba(0,0,0,0.06);border-color:transparent}
+.ld-bkd{background:rgba(201,80,80,0.12);border-color:rgba(201,80,80,0.35);position:relative;overflow:hidden}
+.ld-bkd::before{
+  content:'';position:absolute;inset:0;
+  background:
+    linear-gradient(135deg,transparent 42%,rgba(201,80,80,0.55) 42%,rgba(201,80,80,0.55) 58%,transparent 58%),
+    linear-gradient(45deg,transparent 42%,rgba(201,80,80,0.55) 42%,rgba(201,80,80,0.55) 58%,transparent 58%);
+  border-radius:inherit;
+}
 .ld-lkd{background:rgba(196,154,60,0.12);border-color:rgba(196,154,60,0.3)}
 
 /* Seat summary */
