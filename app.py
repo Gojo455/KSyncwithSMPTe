@@ -602,7 +602,7 @@ def seed(db):
         ("Wicked", "Musical · Drama · Fantasy",
          "The untold story of the witches of Oz — Elphaba and Glinda's unlikely friendship.",
          160, 8.0, "English", "2024-11-22",
-         "https://image.tmdb.org/t/p/w500/c5UPPqLwHBmSiK9vS6hiSnDXDNR.jpg",
+         "https://upload.wikimedia.org/wikipedia/en/thumb/3/3c/Wicked_%282024_film%29_poster.png/250px-Wicked_%282024_film%29_poster.png",
          "#2d1a3a", 5500, 1, 1, '["Cynthia Erivo","Ariana Grande","Jonathan Bailey"]', "Jon M. Chu", "PG"),
 
         ("Gladiator II", "Action · Drama · History",
@@ -645,7 +645,7 @@ def seed(db):
         ("The Notebook", "Romance · Drama",
          "A poor young man falls in love with a rich girl in 1940s South Carolina, but her parents disapprove. Years later their love story is read to a woman with dementia.",
          123, 7.9, "English", "2004-06-25",
-         "https://image.tmdb.org/t/p/w500/qom1SZSENdmHFNZBXbtLAGselQQ.jpg",
+         "https://spoilertown.com/wp-content/uploads/2024/10/the-notebook-2004.webp",
          "#1a1a2e", 2500, 0, 1,
          '["Ryan Gosling","Rachel McAdams","James Garner"]', "Nick Cassavetes", "PG-13"),
 
@@ -666,7 +666,7 @@ def seed(db):
         ("Me Before You", "Romance · Drama",
          "A small-town woman takes a job caring for a paralysed man and the two develop an unexpected bond that changes both their lives forever.",
          110, 7.4, "English", "2016-06-03",
-         "https://image.tmdb.org/t/p/w500/qGABQGMAPzSuQk2eLhlpEjqJPuB.jpg",
+         "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS1gpdh3TT2RWr9p8Z6kDRO1-U5srSTF4jauA&s",
          "#2a0a1e", 2500, 0, 0,
          '["Emilia Clarke","Sam Claflin","Janet McTeer"]', "Thea Sharrock", "PG-13"),
 
@@ -687,7 +687,7 @@ def seed(db):
         ("About Time", "Romance · Drama · Fantasy",
          "A young man who can travel back in time uses the ability to improve his love life but learns the best moments are worth living only once.",
          123, 7.8, "English", "2013-11-01",
-         "https://image.tmdb.org/t/p/w500/zBHkpVFb9lkzAMgFGQqGFFlEh2k.jpg",
+         "https://encrypted-tbn1.gstatic.com/images?q=tbn:ANd9GcQISeoVD--jC4jXqYUl8ZbT7l2IT2lEZBE5_IEmFYgvcUFc8_95",
          "#0a2a1e", 2500, 0, 1,
          '["Domhnall Gleeson","Rachel McAdams","Bill Nighy"]', "Richard Curtis", "R"),
 
