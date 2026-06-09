@@ -632,7 +632,7 @@ def seed(db):
         ("Despicable Me 4", "Animation · Comedy · Family",
          "Gru and his family are forced on the run after he makes a powerful new enemy.",
          95, 6.8, "English", "2024-07-03",
-         "https://image.tmdb.org/t/p/w500/wWba3TaojhK7NdycyUk0dna3Pra.jpg",
+         "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQidlYNC9El1ZOMIDuOGnenzToqW7FHgQXMDlN7sjYrfHCo-Gmtq4kdUFjFI4HqBNvfky0N&s=10",
          "#f5a623", 4000, 0, 0, '["Steve Carell","Kristen Wiig","Will Ferrell"]', "Chris Renaud", "PG"),
 
         ("Bad Boys: Ride or Die", "Action · Comedy · Crime",
@@ -652,7 +652,7 @@ def seed(db):
         ("Crazy Rich Asians", "Romance · Comedy · Drama",
          "A New York professor discovers her boyfriend is from one of Singapore's wealthiest families when she accompanies him to a wedding.",
          120, 6.9, "English", "2018-08-15",
-         "https://image.tmdb.org/t/p/w500/lhkzVhXVfEkNxluTkSRfZPAXFHs.jpg",
+         "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS-_tYB9Il3Cc3l7yIEgr2Ph2z69R7aKZrvZ01leHjJqBqVDda_2c2X4FfleNNO1Ui5og8H&s=10",
          "#1a0a2e", 2500, 0, 1,
          '["Constance Wu","Henry Golding","Michelle Yeoh"]', "Jon M. Chu", "PG-13"),
 
@@ -680,7 +680,7 @@ def seed(db):
         ("Pride and Prejudice", "Romance · Drama · Period",
          "Spirited Elizabeth Bennet meets the proud Mr Darcy in 19th-century England and both must overcome their prejudices to find love.",
          129, 7.8, "English", "2005-11-11",
-         "https://image.tmdb.org/t/p/w500/bPuCBDTVgMIUjSGcMOsOkEjsJhd.jpg",
+         "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS4_53pJuxCINGzaTrYn63I5VE4BGe719D-VXqTj_keG3sD_guZXwnPEF-lBqx-C1pX_3Ja&s=10",
          "#2a1a0e", 2500, 0, 0,
          '["Keira Knightley","Matthew Macfadyen","Judi Dench"]', "Joe Wright", "PG"),
 
@@ -694,7 +694,7 @@ def seed(db):
         ("The Proposal", "Romance · Comedy",
          "A Canadian book editor facing deportation convinces her assistant to marry her. They travel to Alaska to meet his family and feelings complicate the arrangement.",
          108, 6.7, "English", "2009-06-19",
-         "https://image.tmdb.org/t/p/w500/nGwivQGqMhANMGJlSiCiMrfZDSC.jpg",
+         "https://m.media-amazon.com/images/M/MV5BYWU3ZmFhYTktNzU4NS00ZTEyLTkwNTYtMWE1M2JjMTFmODVkXkEyXkFqcGc@._V1_FMjpg_UX1000_.jpg",
          "#1a2a2e", 2500, 0, 0,
          '["Sandra Bullock","Ryan Reynolds","Betty White"]', "Anne Fletcher", "PG-13"),
 
@@ -708,7 +708,7 @@ def seed(db):
         ("To All the Boys I've Loved Before", "Romance · Comedy · Drama",
          "A high schooler's secret love letters are accidentally sent to all her crushes, forcing her into a fake relationship that slowly becomes real.",
          99, 7.1, "English", "2018-08-17",
-         "https://image.tmdb.org/t/p/w500/sAPSAZhfKnZCluBqaB5pgE7dRJF.jpg",
+         "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRoTE0MvlurVrW1eiNb4cCvgdhljXHWWS5rlPUqsUFIaz-gb3wLzlLKYVupgms_T4wUd7_xis1JmSyLl2WsSM1M7-vLBkePckOZoejxsA&s=10",
          "#2a1a3e", 2500, 0, 0,
          '["Lana Condor","Noah Centineo","Janel Parrish"]', "Susan Johnson", "PG"),
 
@@ -730,14 +730,14 @@ def seed(db):
         ("A Tribe Called Judah", "Drama · Crime · Nollywood",
          "A determined mother raises five sons in Lagos against poverty and hardship, only to watch her children drift toward very different fates as adults.",
          135, 7.2, "Yoruba/English", "2023-12-15",
-         "https://image.tmdb.org/t/p/w500/placeholder.jpg",
+         "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRfRhq1lhl7R6EH_4xONNP0zKevSHk6uvfEMUFj5x_8Vs1ZvZZaZYD8EE23Tw7gvvjjOgUC&s=10",
          "#1a2a0e", 2500, 1, 1,
          '["Funke Akindele","Timini Egbuson","Broda Shaggi"]', "Funke Akindele", "PG-13"),
 
         ("The Black Book", "Action · Thriller · Nollywood",
          "A deacon seeks revenge after his son is killed by corrupt police, uncovering a conspiracy that reaches the highest levels of power.",
          130, 7.0, "English", "2023-09-22",
-         "https://image.tmdb.org/t/p/w500/placeholder2.jpg",
+         "https://m.media-amazon.com/images/M/MV5BZDBlNzU1NWItZmZkOC00YTI5LWJkMDQtZTJiMGVkYjJkNjZjXkEyXkFqcGc@._V1_FMjpg_UX1000_.jpg",
          "#0a0a1e", 2500, 0, 1,
          '["Richard Mofe-Damijo","Sam Dede","Ireti Doyle"]', "Editi Effiong", "PG-13"),
 
