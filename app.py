@@ -8,11 +8,10 @@ import hashlib, secrets, json, os, time, random, math
 from datetime import datetime, timedelta
 from functools import wraps
 
-# ── DATABASE BACKEND ─────────────────────────────────────────────────────────
-# Uses Turso (cloud SQLite) when both env vars are present — data survives
-# Render restarts and deploys forever.
-# Falls back to a local SQLite file automatically when running on your laptop.
-TURSO_URL   = os.environ.get('TURSO_DB_URL')       # e.g. libsql://ksync-yourname.turso.io
+# ── DATABASE BACKEND ────────────────────────────────────────────────────────────────────────────────────
+# Uses Turso (cloud SQLite) when both env vars are set on Render.
+# Falls back to local SQLite file automatically on your laptop.
+TURSO_URL   = os.environ.get('TURSO_DB_URL')
 TURSO_TOKEN = os.environ.get('TURSO_AUTH_TOKEN')
 USE_TURSO   = bool(TURSO_URL and TURSO_TOKEN)
 
@@ -27,7 +26,6 @@ app.secret_key = os.environ.get('cinema_SECRET', 'ksync-stable-secret-key-2026-d
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 
-# Local SQLite path — only used when Turso env vars are NOT set
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'instance', 'ksync.db'))
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
@@ -39,10 +37,10 @@ LOCK_DURATION = 300  # seconds
 PAYSTACK_SECRET_KEY = os.environ.get('PAYSTACK_SECRET_KEY', 'sk_test_527e7adc01bbe74b54897f6b58cf1555e683ccaf')
 PAYSTACK_PUBLIC_KEY = os.environ.get('PAYSTACK_PUBLIC_KEY', 'pk_test_b695c7bf0b597ddebfe2f70ff4aa73927dd1d1de')
 
-# ── DB Helpers ────────────────────────────────────────────────────────────────
+# ── DB Helpers ────────────────────────────────────────────────────────────────────────────────────
 #
-#  TursoRow wraps plain tuple rows from libsql so that row['col'] keeps
-#  working everywhere — libsql does not support sqlite3's row_factory.
+# TursoRow wraps plain tuple rows from libsql so that row["col"] keeps
+# working everywhere. libsql does not support sqlite3 row_factory.
 #
 class TursoRow:
     def __init__(self, description, values):
@@ -65,13 +63,7 @@ def get_db():
     """One connection per request, stored on Flask g."""
     if '_db' not in g:
         if USE_TURSO:
-            # CHANGE TO:
-            g._db = libsql.connect(
-    TURSO_URL,
-    auth_token = TURSO_TOKEN,
-          )
-
-            g._db.sync()   # pull latest data from Turso on open
+            g._db = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
         else:
             g._db = sqlite3.connect(DB_PATH)
             g._db.row_factory = sqlite3.Row
@@ -98,7 +90,6 @@ def xdb(sql, args=()):
     db  = get_db()
     cur = db.execute(sql, args)
     db.commit()
-    if USE_TURSO: db.sync()   # push write to Turso cloud immediately
     return cur.lastrowid
 
 
@@ -449,7 +440,6 @@ def learn_preferences(user_id, movie_id, seat_id, db=None):
     
     if own_db:
         db.commit()
-        if USE_TURSO: db.sync()
 
 #  Auth Helpers
 
@@ -486,12 +476,7 @@ def admin_required(f):
 
 def init_db():
     if USE_TURSO:
-        db = libsql.connect(
-    TURSO_URL,
-    auth_token = TURSO_TOKEN,
-        )
-        
-        db.sync()
+        db = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
     else:
         db = sqlite3.connect(DB_PATH)
         db.row_factory = sqlite3.Row
@@ -840,12 +825,8 @@ def seed(db):
 
     #  Seats for each showtime
     for stid, hid, rows, cols in showtime_records:
-        raw_hall = db.execute("SELECT * FROM halls WHERE id=?", (hid,)).fetchone()
-        # wrap for Turso compatibility (plain tuple → dict-like row)
-        cur_desc = db.execute("PRAGMA table_info(halls)").fetchall()
-        hall = raw_hall  # already a sqlite3.Row locally; TursoRow not needed here
-        # use the rows/cols we already have from hall_configs instead
-        tr, tc = rows, cols
+        hall = db.execute("SELECT * FROM halls WHERE id=?", (hid,)).fetchone()
+        tr, tc = hall['total_rows'], hall['total_cols']
         for r in range(1, tr+1):
             for c in range(1, tc+1):
                 q    = compute_seat_quality(r, c, tr, tc)
@@ -866,7 +847,6 @@ def seed(db):
     db.execute("INSERT OR IGNORE INTO users (username,email,password_hash,is_admin,is_verified) VALUES (?,?,?,?,?)",
                ("demo","demo@ksync.ng", hash_pw("demo123"), 0, 1))
     db.commit()
-    if USE_TURSO: db.sync()
 
     # ── SYNTHETIC PEER USERS ────────────────────────────────────────────────
     # These five users exist purely to give the collaborative filter enough
@@ -919,7 +899,6 @@ def seed(db):
             learn_preferences(uid, show['mid'], avail[0], db=db)
 
     db.commit()
-    if USE_TURSO: db.sync()
 
 # Page Routes
 @app.route('/')
@@ -1441,7 +1420,6 @@ def admin_showtimes():
                     (stid, hall['id'], r, c, RL[r-1], c, q, json.dumps(tags), 'available')
                 )
         db.commit()
-        if USE_TURSO: db.sync()
         return jsonify({'success': True, 'showtime_id': stid})
 
     rows = qdb("SELECT s.*,m.title FROM showtimes s JOIN movies m ON s.movie_id=m.id ORDER BY s.showtime DESC LIMIT 60")
