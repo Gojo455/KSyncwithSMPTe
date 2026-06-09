@@ -825,8 +825,7 @@ def seed(db):
 
     #  Seats for each showtime
     for stid, hid, rows, cols in showtime_records:
-        hall = db.execute("SELECT * FROM halls WHERE id=?", (hid,)).fetchone()
-        tr, tc = hall['total_rows'], hall['total_cols']
+        tr, tc = rows, cols  # already in the loop from showtime_records
         for r in range(1, tr+1):
             for c in range(1, tc+1):
                 q    = compute_seat_quality(r, c, tr, tc)
