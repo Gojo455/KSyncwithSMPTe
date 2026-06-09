@@ -440,7 +440,7 @@ function autoSuggestSeats(seats) {
       </span>
       <span style="margin-left:auto; background:var(--rose,#c96b7a); color:#fff;
                    font-size:0.62rem; font-weight:700; padding:2px 8px;
-                   border-radius:20px; letter-spacing:0.5px">AI PICK</span>
+                   border-radius:20px; letter-spacing:0.5px">Best Pick</span>
     </div>
     <div style="color:#7a5c52; font-size:0.76rem; margin-bottom:0.6rem; padding-left:1.6rem">
       Ranked by cinema research standards + your personal seating history
