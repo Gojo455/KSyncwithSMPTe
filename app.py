@@ -1,97 +1,73 @@
 """
 ksync — Seat-Aware Cinema Reservation System
-Abuja, Nigeria | Flask + Turso/SQLite | Hybrid Recommender | Paystack Payments
+Abuja, Nigeria | Flask + PostgreSQL | Hybrid Recommender | Paystack Payments
 """
 
 from flask import Flask, render_template, request, jsonify, session, g, redirect
 import hashlib, secrets, json, os, time, random, math
 from datetime import datetime, timedelta
 from functools import wraps
-
-# ── DATABASE BACKEND ────────────────────────────────────────────────────────────────────────────────────
-# Uses Turso (cloud SQLite) when both env vars are set on Render.
-# Falls back to local SQLite file automatically on your laptop.
-TURSO_URL   = os.environ.get('TURSO_DB_URL')
-TURSO_TOKEN = os.environ.get('TURSO_AUTH_TOKEN')
-USE_TURSO   = bool(TURSO_URL and TURSO_TOKEN)
-
-if USE_TURSO:
-    import libsql
-else:
-    import sqlite3
-# ─────────────────────────────────────────────────────────────────────────────
+import psycopg2
+import psycopg2.extras   # RealDictCursor — makes row["col"] work like sqlite3.Row
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('cinema_SECRET', 'ksync-stable-secret-key-2026-do-not-share')
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 
-DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(__file__), 'instance', 'ksync.db'))
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+# ── PostgreSQL connection ─────────────────────────────────────────────────────
+# On Render: add a free PostgreSQL database, then copy its Internal Database URL
+# into an env var called DATABASE_URL.
+# Locally: set DATABASE_URL=postgresql://user:password@localhost:5432/ksync
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set.")
+# ─────────────────────────────────────────────────────────────────────────────
 
-SEAT_LOCKS = {}   # { "showtime:row:col": {user_id, expires} }
-LOCK_DURATION = 300  # seconds
+SEAT_LOCKS    = {}
+LOCK_DURATION = 300
 
-# Paystack keys — replace with your own from dashboard.paystack.com
-# These are Paystack's official test keys (safe to use for demos)
 PAYSTACK_SECRET_KEY = os.environ.get('PAYSTACK_SECRET_KEY', 'sk_test_527e7adc01bbe74b54897f6b58cf1555e683ccaf')
 PAYSTACK_PUBLIC_KEY = os.environ.get('PAYSTACK_PUBLIC_KEY', 'pk_test_b695c7bf0b597ddebfe2f70ff4aa73927dd1d1de')
 
-# ── DB Helpers ────────────────────────────────────────────────────────────────────────────────────
-#
-# TursoRow wraps plain tuple rows from libsql so that row["col"] keeps
-# working everywhere. libsql does not support sqlite3 row_factory.
-#
-class TursoRow:
-    def __init__(self, description, values):
-        self._keys   = [d[0] for d in description]
-        self._values = list(values)
-        self._map    = dict(zip(self._keys, self._values))
-    def __getitem__(self, key):
-        return self._values[key] if isinstance(key, int) else self._map[key]
-    def __iter__(self):        return iter(self._values)
-    def keys(self):            return self._keys
-    def get(self, k, d=None):  return self._map.get(k, d)
-    def __repr__(self):        return str(self._map)
 
-def _wrap(cursor, rows):
-    if not rows or cursor.description is None: return rows
-    return [TursoRow(cursor.description, r) for r in rows]
-
-
+# ── DB Helpers ────────────────────────────────────────────────────────────────
 def get_db():
-    """One connection per request, stored on Flask g."""
+    """One psycopg2 connection per request, stored on Flask g."""
     if '_db' not in g:
-        if USE_TURSO:
-            g._db = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
-        else:
-            g._db = sqlite3.connect(DB_PATH)
-            g._db.row_factory = sqlite3.Row
-            g._db.execute("PRAGMA journal_mode=DELETE")
-            g._db.execute("PRAGMA foreign_keys=ON")
+        g._db = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        g._db.autocommit = False
     return g._db
 
 
 @app.teardown_appcontext
 def close_db(e):
     db = g.pop('_db', None)
-    if db: db.close()
+    if db:
+        db.close()
 
 
 def qdb(sql, args=(), one=False):
+    """Read query. Returns list of RealDictRow (or single row if one=True)."""
     db  = get_db()
-    cur = db.execute(sql, args)
-    raw = cur.fetchall()
-    rows = _wrap(cur, raw) if USE_TURSO else raw
+    cur = db.cursor()
+    cur.execute(sql, args)
+    rows = cur.fetchall()
+    cur.close()
     return (rows[0] if rows else None) if one else rows
 
 
 def xdb(sql, args=()):
+    """Write query. Commits and returns the inserted row id via RETURNING id."""
     db  = get_db()
-    cur = db.execute(sql, args)
+    cur = db.cursor()
+    # Append RETURNING id only for INSERT statements that don't already have it
+    returning_sql = sql if 'RETURNING' in sql.upper() else sql.rstrip(';') + ' RETURNING id'
+    cur.execute(returning_sql, args)
+    row = cur.fetchone()
     db.commit()
-    return cur.lastrowid
-
+    cur.close()
+    return row['id'] if row else None
 
 #  SCORE 1 — OBJECTIVE SEAT QUALITY  (Q_obj)
 #
@@ -198,9 +174,9 @@ def classify_seat(row, col, total_rows, total_cols):
 #
 #  It compares the seat's position tags and objective quality against
 #  three preference dimensions learned from the user's booking history:
-#    • seat_position_pref  — do they prefer center / aisle / edge?
-#    • seat_zone_pref      — do they prefer front / middle / back?
-#    • avg_quality_pref    — what objective quality level do they usually choose?
+#    • seat_position_pref  — do they prefer center / aisle / edge%s
+#    • seat_zone_pref      — do they prefer front / middle / back%s
+#    • avg_quality_pref    — what objective quality level do they usually choose%s
 #
 #  Weights:  position match 40 %  |  zone match 30 %  |  quality proximity 30 %
 # ═══════════════════════════════════════════════════════════════════
@@ -234,7 +210,7 @@ def seat_pref_match(available_seats, prefs):
         # --- Zone match (longitudinal: front / middle / back) ---
         zm = 1.0 if zone_pref in tags else 0.35
 
-        # --- Quality proximity (how close is Q_obj to the user's usual choice?) ---
+        # --- Quality proximity (how close is Q_obj to the user's usual choice%s) ---
         qm = max(0.0, 1.0 - abs(q_obj - avg_q_pref) / 10.0)
 
         # Combined preference score for this seat (weighted sum)
@@ -249,7 +225,7 @@ def seat_pref_match(available_seats, prefs):
 #  Recommendation Engine
 
 def get_prefs(user_id):
-    p = qdb("SELECT * FROM user_preferences WHERE user_id=?", (user_id,), one=True)
+    p = qdb("SELECT * FROM user_preferences WHERE user_id=%s", (user_id,), one=True)
     return dict(p) if p else {
         'genre_weights':'{}','seat_position_pref':'center',
         'seat_zone_pref':'middle','avg_quality_pref':7.0,'booking_count':0}
@@ -279,12 +255,10 @@ def collab_score(user_id, movie_id):
     """
     # Build this user's genre set from confirmed booking history
     raw_user = qdb(
-        """SELECT DISTINCT m.genre FROM bookings b
-           JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id
-           WHERE b.user_id=? AND b.status='confirmed'""", (user_id,))
+        """SELECT DISTINCT m.genre FROM bookings b JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id WHERE b.user_id=%s AND b.status='confirmed'""", (user_id,))
     user_genres = set(g for r in raw_user for g in split_genres(r['genre']))
 
-    tgt = qdb("SELECT genre FROM movies WHERE id=?", (movie_id,), one=True)
+    tgt = qdb("SELECT genre FROM movies WHERE id=%s", (movie_id,), one=True)
     if not tgt: return 0.0
     tgt_genres = set(split_genres(tgt['genre']))
 
@@ -293,14 +267,14 @@ def collab_score(user_id, movie_id):
     all_other_users = qdb(
         """SELECT DISTINCT b.user_id FROM bookings b
            JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id
-           WHERE b.user_id!=? AND b.status='confirmed'""", (user_id,))
+           WHERE b.user_id!=%s AND b.status='confirmed'""", (user_id,))
 
     sims = []
     for o in all_other_users:
         raw_peer = qdb(
             """SELECT DISTINCT m.genre FROM bookings b
                JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id
-               WHERE b.user_id=? AND b.status='confirmed'""", (o['user_id'],))
+               WHERE b.user_id=%s AND b.status='confirmed'""", (o['user_id'],))
         peer_genres = set(g for r in raw_peer for g in split_genres(r['genre']))
         # Only include peers who share at least one genre with the target movie
         if peer_genres & tgt_genres:
@@ -328,13 +302,13 @@ def recommend(user_id, limit=12):
                   m.poster_url, m.duration_min, m.director, m.cast_list,
                   m.id as movie_id
            FROM showtimes s JOIN movies m ON s.movie_id=m.id
-           WHERE s.showtime>=? AND m.is_active=1 ORDER BY s.showtime""", (now,))
+           WHERE s.showtime>=%s AND m.is_active=1 ORDER BY s.showtime""", (now,))
 
     scored = {}
     for st in showtimes:
         mid, sid = st['movie_id'], st['id']
-        avail = qdb("SELECT * FROM seats WHERE showtime_id=? AND status='available'", (sid,))
-        total = qdb("SELECT COUNT(*) as c FROM seats WHERE showtime_id=?", (sid,), one=True)['c']
+        avail = qdb("SELECT * FROM seats WHERE showtime_id=%s AND status='available'", (sid,))
+        total = qdb("SELECT COUNT(*) as c FROM seats WHERE showtime_id=%s", (sid,), one=True)['c']
         if total == 0: continue
         avail_ratio = len(avail) / total
         if avail_ratio == 0: continue
@@ -410,11 +384,11 @@ def learn_preferences(user_id, movie_id, seat_id, db=None):
     if own_db:
         db = get_db()
     
-    movie = db.execute("SELECT genre FROM movies WHERE id=?", (movie_id,)).fetchone()
-    seat  = db.execute("SELECT * FROM seats WHERE id=?", (seat_id,)).fetchone()
+    movie = db.execute("SELECT genre FROM movies WHERE id=%s", (movie_id,)).fetchone()
+    seat  = db.execute("SELECT * FROM seats WHERE id=%s", (seat_id,)).fetchone()
     if not movie or not seat: return
     
-    prefs = db.execute("SELECT * FROM user_preferences WHERE user_id=?", (user_id,)).fetchone()
+    prefs = db.execute("SELECT * FROM user_preferences WHERE user_id=%s", (user_id,)).fetchone()
     tags = json.loads(seat['position_tags']) if seat['position_tags'] else []
     new_pos  = 'center' if 'center' in tags else ('aisle' if 'aisle' in tags else 'edge')
     new_zone = 'middle' if 'middle' in tags else ('front' if 'front' in tags else 'back')
@@ -426,16 +400,16 @@ def learn_preferences(user_id, movie_id, seat_id, db=None):
         beta = 0.25
         new_avg_q = (1 - beta) * float(prefs['avg_quality_pref']) + beta * float(seat['quality_score'])
         db.execute(
-            """UPDATE user_preferences SET genre_weights=?, seat_position_pref=?,
-               seat_zone_pref=?, avg_quality_pref=?, booking_count=booking_count+1
-               WHERE user_id=?""",
+            """UPDATE user_preferences SET genre_weights=%s, seat_position_pref=%s,
+               seat_zone_pref=%s, avg_quality_pref=%s, booking_count=booking_count+1
+               WHERE user_id=%s""",
             (json.dumps(gw), new_pos, new_zone, round(new_avg_q, 2), user_id))
     else:
         gw = {movie['genre']: 0.5}
         db.execute(
             """INSERT INTO user_preferences
                (user_id, genre_weights, seat_position_pref, seat_zone_pref, avg_quality_pref, booking_count)
-               VALUES (?,?,?,?,?,?)""",
+               VALUES (%s,%s,%s,%s,%s,%s)""",
             (user_id, json.dumps(gw), new_pos, new_zone, float(seat['quality_score']), 1))
     
     if own_db:
@@ -471,301 +445,238 @@ def admin_required(f):
         return f(*a, **kw)
     return d
 
+
 #  Database Init
 
-
 def init_db():
-    if USE_TURSO:
-        db = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
-    else:
-        db = sqlite3.connect(DB_PATH)
-        db.row_factory = sqlite3.Row
-    db.executescript("""
-    PRAGMA foreign_keys=ON;
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL, is_admin INTEGER DEFAULT 0,
-        is_verified INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS email_verifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        token TEXT NOT NULL,
-        verified INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-    );
-    CREATE TABLE IF NOT EXISTS movies (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL, genre TEXT NOT NULL, description TEXT,
-        duration_min INTEGER, rating REAL DEFAULT 0,
-        poster_url TEXT, director TEXT, cast_list TEXT,
-        release_year INTEGER, is_active INTEGER DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS cinemas (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL, location TEXT NOT NULL, address TEXT
-    );
-    CREATE TABLE IF NOT EXISTS halls (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cinema_id INTEGER NOT NULL, name TEXT NOT NULL,
-        total_rows INTEGER NOT NULL, total_cols INTEGER NOT NULL,
-        capacity INTEGER NOT NULL,
-        FOREIGN KEY (cinema_id) REFERENCES cinemas(id)
-    );
-    CREATE TABLE IF NOT EXISTS showtimes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        movie_id INTEGER NOT NULL, hall_id INTEGER NOT NULL,
-        hall_name TEXT NOT NULL, cinema_name TEXT NOT NULL,
-        showtime TIMESTAMP NOT NULL, price REAL NOT NULL,
-        FOREIGN KEY (movie_id) REFERENCES movies(id),
-        FOREIGN KEY (hall_id) REFERENCES halls(id)
-    );
-    CREATE TABLE IF NOT EXISTS seats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        showtime_id INTEGER NOT NULL, hall_id INTEGER NOT NULL,
-        row_num INTEGER NOT NULL, col_num INTEGER NOT NULL,
-        row_label TEXT NOT NULL, seat_number INTEGER NOT NULL,
-        quality_score REAL NOT NULL, position_tags TEXT,
-        status TEXT DEFAULT 'available',
-        locked_by INTEGER, locked_until TIMESTAMP,
-        FOREIGN KEY (showtime_id) REFERENCES showtimes(id)
-    );
-    CREATE TABLE IF NOT EXISTS bookings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL, showtime_id INTEGER NOT NULL,
-        seat_id INTEGER NOT NULL, amount REAL NOT NULL,
-        status TEXT DEFAULT 'pending',
-        payment_ref TEXT, paystack_ref TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id),
-        FOREIGN KEY (showtime_id) REFERENCES showtimes(id),
-        FOREIGN KEY (seat_id) REFERENCES seats(id)
-    );
-    CREATE TABLE IF NOT EXISTS user_preferences (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER UNIQUE NOT NULL,
-        genre_weights TEXT DEFAULT '{}',
-        seat_position_pref TEXT DEFAULT 'center',
-        seat_zone_pref TEXT DEFAULT 'middle',
-        avg_quality_pref REAL DEFAULT 7.0,
-        booking_count INTEGER DEFAULT 0,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-    );
+    db = psycopg2.connect(DATABASE_URL)
+    db.autocommit = True
+    cur = db.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            is_admin INTEGER DEFAULT 0,
+            is_verified INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
     """)
-    db.commit()
-    if db.execute("SELECT COUNT(*) FROM movies").fetchone()[0] == 0:
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS email_verifications (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            token TEXT NOT NULL,
+            verified INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS movies (
+            id SERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            genre TEXT NOT NULL,
+            description TEXT,
+            duration_min INTEGER,
+            rating REAL DEFAULT 0,
+            poster_url TEXT,
+            director TEXT,
+            cast_list TEXT,
+            release_year INTEGER,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS cinemas (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            location TEXT NOT NULL,
+            address TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS halls (
+            id SERIAL PRIMARY KEY,
+            cinema_id INTEGER NOT NULL REFERENCES cinemas(id),
+            name TEXT NOT NULL,
+            total_rows INTEGER NOT NULL,
+            total_cols INTEGER NOT NULL,
+            capacity INTEGER NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS showtimes (
+            id SERIAL PRIMARY KEY,
+            movie_id INTEGER NOT NULL REFERENCES movies(id),
+            hall_id INTEGER NOT NULL REFERENCES halls(id),
+            hall_name TEXT NOT NULL,
+            cinema_name TEXT NOT NULL,
+            showtime TIMESTAMP NOT NULL,
+            price REAL NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS seats (
+            id SERIAL PRIMARY KEY,
+            showtime_id INTEGER NOT NULL REFERENCES showtimes(id),
+            hall_id INTEGER NOT NULL,
+            row_num INTEGER NOT NULL,
+            col_num INTEGER NOT NULL,
+            row_label TEXT NOT NULL,
+            seat_number INTEGER NOT NULL,
+            quality_score REAL NOT NULL,
+            position_tags TEXT,
+            status TEXT DEFAULT 'available',
+            locked_by INTEGER,
+            locked_until TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bookings (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            showtime_id INTEGER NOT NULL REFERENCES showtimes(id),
+            seat_id INTEGER NOT NULL REFERENCES seats(id),
+            amount REAL NOT NULL,
+            status TEXT DEFAULT 'pending',
+            payment_ref TEXT,
+            paystack_ref TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_preferences (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER UNIQUE NOT NULL REFERENCES users(id),
+            genre_weights TEXT DEFAULT '{}',
+            seat_position_pref TEXT DEFAULT 'center',
+            seat_zone_pref TEXT DEFAULT 'middle',
+            avg_quality_pref REAL DEFAULT 7.0,
+            booking_count INTEGER DEFAULT 0
+        )
+    """)
+    cur.close()
+
+    # Seed only if movies table is empty
+    check_cur = db.cursor()
+    check_cur.execute("SELECT COUNT(*) as c FROM movies")
+    count = check_cur.fetchone()[0]
+    check_cur.close()
+    if count == 0:
         seed(db)
     db.close()
 
 
 def seed(db):
     import random; random.seed(99)
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    #  Movies data (from TMDB)
     TMDB = "https://image.tmdb.org/t/p/w500"
     movies = [
-        
         ("Deadpool & Wolverine", "Action · Comedy · Superhero",
          "The MCU's most unlikely duo team up to save the multiverse in this irreverent, R-rated adventure.",
          127, 8.1, "English", "2024-07-26",
          "https://image.tmdb.org/t/p/w500/8cdWjvZQUExUUTzyp4t6EDMubfO.jpg",
          "#8B1A1A", 5500, 1, 1, '["Ryan Reynolds","Hugh Jackman","Emma Corrin"]', "Shawn Levy", "R"),
-
         ("Inside Out 2", "Animation · Family · Comedy",
          "Riley enters her teenage years and new emotions join the team inside her head.",
          100, 7.9, "English", "2024-06-14",
          "https://image.tmdb.org/t/p/w500/vpnVM9B6NMmQpWeZvzLvDESb2QY.jpg",
          "#FF6B35", 4500, 1, 1, '["Amy Poehler","Maya Hawke","Kensington Tallman"]', "Kelsey Mann", "PG"),
-
         ("Alien: Romulus", "Horror · Sci-Fi · Thriller",
          "Young colonizers face the most terrifying life form in the universe aboard an abandoned space station.",
          119, 7.2, "English", "2024-08-16",
          "https://image.tmdb.org/t/p/w500/b33nnKl1GSFbao4l3fZDDqsMx0F.jpg",
          "#1a2a1a", 4000, 0, 1, '["Cailee Spaeny","David Jonsson","Archie Renaux"]', "Fede Álvarez", "R"),
-
         ("Twisters", "Action · Adventure · Thriller",
          "Storm chasers pursue devastating tornadoes across Oklahoma in this high-octane spectacle.",
          122, 7.1, "English", "2024-07-19",
          "https://image.tmdb.org/t/p/w500/pjnD08FlMAIXsfOLKQbvmO0f0MD.jpg",
          "#1a3a4a", 4500, 0, 0, '["Daisy Edgar-Jones","Glen Powell","Anthony Ramos"]', "Lee Isaac Chung", "PG-13"),
-
         ("The Wild Robot", "Animation · Family · Drama",
          "A robot shipwrecked on an uninhabited island must adapt and form bonds with native animals.",
          102, 8.3, "English", "2024-09-27",
          "https://image.tmdb.org/t/p/w500/wTnV3PCVW5O92JMrFvvrRcV39RU.jpg",
          "#2d4a2d", 4500, 1, 0, '["Lupita Nyongo","Pedro Pascal","Kit Connor"]', "Chris Sanders", "PG"),
-
         ("Wicked", "Musical · Drama · Fantasy",
          "The untold story of the witches of Oz — Elphaba and Glinda's unlikely friendship.",
          160, 8.0, "English", "2024-11-22",
          "https://upload.wikimedia.org/wikipedia/en/thumb/3/3c/Wicked_%282024_film%29_poster.png/250px-Wicked_%282024_film%29_poster.png",
          "#2d1a3a", 5500, 1, 1, '["Cynthia Erivo","Ariana Grande","Jonathan Bailey"]', "Jon M. Chu", "PG"),
-
         ("Gladiator II", "Action · Drama · History",
          "Lucius is forced into the Colosseum after his home is conquered by tyrannical Roman emperors.",
          148, 7.4, "English", "2024-11-22",
          "https://image.tmdb.org/t/p/w500/2cxhvwyEwRlysAmRH4iodkvo0z5.jpg",
          "#3a2a1a", 5000, 1, 1, '["Paul Mescal","Denzel Washington","Pedro Pascal"]', "Ridley Scott", "R"),
-
         ("Moana 2", "Animation · Family · Adventure",
          "Moana journeys to the far seas of Oceania and into dangerous, long-lost waters.",
          100, 7.0, "English", "2024-11-27",
          "https://image.tmdb.org/t/p/w500/4YZpsylmjHbqeWzjKpUEF8gcLNW.jpg",
          "#0a2a3a", 4500, 0, 1, '["Auli Cravalho","Dwayne Johnson","Alan Tudyk"]', "Dana Ledoux Miller", "PG"),
-
-        ("A Quiet Place: Day One", "Horror · Sci-Fi · Thriller",
-         "Experience the day the deadly creatures first arrived on Earth and New York City fell silent.",
-         99, 6.9, "English", "2024-06-28",
-         "https://image.tmdb.org/t/p/w500/yrpPYKijwdMHyTGIOd1iK1h0Wb6.jpg",
-         "#1a0a0a", 4000, 0, 0, '["Lupita Nyongo","Joseph Quinn","Alex Wolff"]', "Michael Sarnoski", "PG-13"),
-
-        ("Kingdom of the Planet of the Apes", "Sci-Fi · Action · Adventure",
-         "A young ape embarks on a journey that causes him to question everything he has been taught.",
-         145, 7.1, "English", "2024-05-10",
-         "https://image.tmdb.org/t/p/w500/gKkl37BQuKTanygYQG1pyYgLVgf.jpg",
-         "#2a1a0a", 4500, 0, 0, '["Owen Teague","Freya Allan","Kevin Durand"]', "Wes Ball", "PG-13"),
-
-        ("Despicable Me 4", "Animation · Comedy · Family",
-         "Gru and his family are forced on the run after he makes a powerful new enemy.",
-         95, 6.8, "English", "2024-07-03",
-         "https://image.tmdb.org/t/p/w500/wWba3TaojhK7NdycyUk0dna3Pra.jpg",
-         "#f5a623", 4000, 0, 0, '["Steve Carell","Kristen Wiig","Will Ferrell"]', "Chris Renaud", "PG"),
-
-        ("Bad Boys: Ride or Die", "Action · Comedy · Crime",
-         "Miami detectives Lowrey and Burnett become outlaws when the Miami PD is threatened.",
-         115, 7.0, "English", "2024-06-07",
-         "https://image.tmdb.org/t/p/w500/oGythE98MYleE6mZlGs5oBGkux1.jpg",
-         "#1a1a0a", 4500, 0, 1, '["Will Smith","Martin Lawrence","Vanessa Hudgens"]', "Adil El Arbi", "R"),
-
-        # ROMANCE
-        ("The Notebook", "Romance · Drama",
-         "A poor young man falls in love with a rich girl in 1940s South Carolina, but her parents disapprove. Years later their love story is read to a woman with dementia.",
-         123, 7.9, "English", "2004-06-25",
-         "https://spoilertown.com/wp-content/uploads/2024/10/the-notebook-2004.webp",
-         "#1a1a2e", 2500, 0, 1,
-         '["Ryan Gosling","Rachel McAdams","James Garner"]', "Nick Cassavetes", "PG-13"),
-
-        ("Crazy Rich Asians", "Romance · Comedy · Drama",
-         "A New York professor discovers her boyfriend is from one of Singapore's wealthiest families when she accompanies him to a wedding.",
-         120, 6.9, "English", "2018-08-15",
-         "https://image.tmdb.org/t/p/w500/lhkzVhXVfEkNxluTkSRfZPAXFHs.jpg",
-         "#1a0a2e", 2500, 0, 1,
-         '["Constance Wu","Henry Golding","Michelle Yeoh"]', "Jon M. Chu", "PG-13"),
-
-        ("La La Land", "Romance · Musical · Drama",
-         "A jazz pianist and an aspiring actress fall in love while chasing their dreams in Los Angeles, testing whether love and ambition can coexist.",
-         128, 8.0, "English", "2016-12-09",
-         "https://image.tmdb.org/t/p/w500/uDO8zWDhfWwoFdKS4fzkUJt0Rf0.jpg",
-         "#0a1a3e", 2500, 1, 0,
-         '["Ryan Gosling","Emma Stone","John Legend"]', "Damien Chazelle", "PG-13"),
-
-        ("Me Before You", "Romance · Drama",
-         "A small-town woman takes a job caring for a paralysed man and the two develop an unexpected bond that changes both their lives forever.",
-         110, 7.4, "English", "2016-06-03",
-         "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS1gpdh3TT2RWr9p8Z6kDRO1-U5srSTF4jauA&s",
-         "#2a0a1e", 2500, 0, 0,
-         '["Emilia Clarke","Sam Claflin","Janet McTeer"]', "Thea Sharrock", "PG-13"),
-
-        ("A Walk to Remember", "Romance · Drama",
-         "A popular teenager falls in love with a minister's daughter battling a serious illness, transforming his priorities completely.",
-         102, 7.4, "English", "2002-01-25",
-         "https://image.tmdb.org/t/p/w500/4aJoO4GtCMxFMNQcJVvXy2tGTVk.jpg",
-         "#1a0a0e", 2500, 0, 0,
-         '["Mandy Moore","Shane West","Peter Coyote"]', "Adam Shankman", "PG"),
-
-        ("Pride and Prejudice", "Romance · Drama · Period",
-         "Spirited Elizabeth Bennet meets the proud Mr Darcy in 19th-century England and both must overcome their prejudices to find love.",
-         129, 7.8, "English", "2005-11-11",
-         "https://image.tmdb.org/t/p/w500/bPuCBDTVgMIUjSGcMOsOkEjsJhd.jpg",
-         "#2a1a0e", 2500, 0, 0,
-         '["Keira Knightley","Matthew Macfadyen","Judi Dench"]', "Joe Wright", "PG"),
-
-        ("About Time", "Romance · Drama · Fantasy",
-         "A young man who can travel back in time uses the ability to improve his love life but learns the best moments are worth living only once.",
-         123, 7.8, "English", "2013-11-01",
-         "https://encrypted-tbn1.gstatic.com/images?q=tbn:ANd9GcQISeoVD--jC4jXqYUl8ZbT7l2IT2lEZBE5_IEmFYgvcUFc8_95",
-         "#0a2a1e", 2500, 0, 1,
-         '["Domhnall Gleeson","Rachel McAdams","Bill Nighy"]', "Richard Curtis", "R"),
-
-        ("The Proposal", "Romance · Comedy",
-         "A Canadian book editor facing deportation convinces her assistant to marry her. They travel to Alaska to meet his family and feelings complicate the arrangement.",
-         108, 6.7, "English", "2009-06-19",
-         "https://image.tmdb.org/t/p/w500/nGwivQGqMhANMGJlSiCiMrfZDSC.jpg",
-         "#1a2a2e", 2500, 0, 0,
-         '["Sandra Bullock","Ryan Reynolds","Betty White"]', "Anne Fletcher", "PG-13"),
-
-        ("Five Feet Apart", "Romance · Drama",
-         "Two teenagers with cystic fibrosis fall in love in a hospital but their condition means they must always remain five feet apart.",
-         116, 7.2, "English", "2019-03-15",
-         "https://image.tmdb.org/t/p/w500/2Ah63TIvVmZM3hzUwR5hXFg2LEk.jpg",
-         "#0a1a2e", 2500, 0, 1,
-         '["Cole Sprouse","Haley Lu Richardson","Moises Arias"]', "Justin Baldoni", "PG-13"),
-
-        ("To All the Boys I've Loved Before", "Romance · Comedy · Drama",
-         "A high schooler's secret love letters are accidentally sent to all her crushes, forcing her into a fake relationship that slowly becomes real.",
-         99, 7.1, "English", "2018-08-17",
-         "https://image.tmdb.org/t/p/w500/sAPSAZhfKnZCluBqaB5pgE7dRJF.jpg",
-         "#2a1a3e", 2500, 0, 0,
-         '["Lana Condor","Noah Centineo","Janel Parrish"]', "Susan Johnson", "PG"),
-
-        ("Titanic", "Romance · Drama · History",
-         "A young aristocrat falls in love with a penniless artist aboard the ill-fated RMS Titanic on its doomed maiden voyage.",
-         194, 7.9, "English", "1997-12-19",
-         "https://image.tmdb.org/t/p/w500/9xjZS2rlVxm8SFx8kPC3aIGCOYQ.jpg",
-         "#0a0a3e", 3500, 1, 0,
-         '["Leonardo DiCaprio","Kate Winslet","Billy Zane"]', "James Cameron", "PG-13"),
-
-        ("Your Name", "Romance · Animation · Fantasy",
-         "Two teenagers in Japan mysteriously begin swapping bodies and must find each other before a catastrophic event tears them apart forever.",
-         106, 8.4, "Japanese", "2016-08-26",
-         "https://image.tmdb.org/t/p/w500/q719jXXEzOoYaps6babgKnONONX.jpg",
-         "#1a0a3e", 3000, 0, 1,
-         '["Ryunosuke Kamiki","Mone Kamishiraishi"]', "Makoto Shinkai", "PG"),
-
-        # NOLLYWOOD
-        ("A Tribe Called Judah", "Drama · Crime · Nollywood",
-         "A determined mother raises five sons in Lagos against poverty and hardship, only to watch her children drift toward very different fates as adults.",
-         135, 7.2, "Yoruba/English", "2023-12-15",
-         "https://image.tmdb.org/t/p/w500/placeholder.jpg",
-         "#1a2a0e", 2500, 1, 1,
-         '["Funke Akindele","Timini Egbuson","Broda Shaggi"]', "Funke Akindele", "PG-13"),
-
-        ("The Black Book", "Action · Thriller · Nollywood",
-         "A deacon seeks revenge after his son is killed by corrupt police, uncovering a conspiracy that reaches the highest levels of power.",
-         130, 7.0, "English", "2023-09-22",
-         "https://image.tmdb.org/t/p/w500/placeholder2.jpg",
-         "#0a0a1e", 2500, 0, 1,
-         '["Richard Mofe-Damijo","Sam Dede","Ireti Doyle"]', "Editi Effiong", "PG-13"),
-
-        # SCI-FI / ACTION
         ("Dune Part Two", "Sci-Fi · Action · Adventure",
-         "Paul Atreides unites with the Fremen to wage war against those who destroyed his family, fulfilling a dangerous ancient prophecy.",
+         "Paul Atreides unites with the Fremen to wage war against those who destroyed his family.",
          166, 8.5, "English", "2024-03-01",
          "https://image.tmdb.org/t/p/w500/1pdfLvkbY9ohJlCjQH2CZjjYVvJ.jpg",
-         "#1a1a0e", 5500, 1, 1,
-         '["Timothée Chalamet","Zendaya","Rebecca Ferguson"]', "Denis Villeneuve", "PG-13"),
-
+         "#1a1a0e", 5500, 1, 1, '["Timothée Chalamet","Zendaya","Rebecca Ferguson"]', "Denis Villeneuve", "PG-13"),
         ("Interstellar", "Sci-Fi · Drama · Adventure",
-         "A team of explorers travel through a wormhole in space to ensure humanity's survival as Earth faces extinction.",
+         "A team of explorers travel through a wormhole in space to ensure humanity's survival.",
          169, 8.7, "English", "2014-11-07",
          "https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg",
-         "#0a0a2e", 3500, 1, 0,
-         '["Matthew McConaughey","Anne Hathaway","Jessica Chastain"]', "Christopher Nolan", "PG-13"),
+         "#0a0a2e", 3500, 1, 0, '["Matthew McConaughey","Anne Hathaway","Jessica Chastain"]', "Christopher Nolan", "PG-13"),
+        ("The Notebook", "Romance · Drama",
+         "A poor young man falls in love with a rich girl in 1940s South Carolina.",
+         123, 7.9, "English", "2004-06-25",
+         "https://spoilertown.com/wp-content/uploads/2024/10/the-notebook-2004.webp",
+         "#1a1a2e", 2500, 0, 1, '["Ryan Gosling","Rachel McAdams","James Garner"]', "Nick Cassavetes", "PG-13"),
+        ("Crazy Rich Asians", "Romance · Comedy · Drama",
+         "A New York professor discovers her boyfriend is from one of Singapore's wealthiest families.",
+         120, 6.9, "English", "2018-08-15",
+         "https://image.tmdb.org/t/p/w500/lhkzVhXVfEkNxluTkSRfZPAXFHs.jpg",
+         "#1a0a2e", 2500, 0, 1, '["Constance Wu","Henry Golding","Michelle Yeoh"]', "Jon M. Chu", "PG-13"),
+        ("La La Land", "Romance · Musical · Drama",
+         "A jazz pianist and an aspiring actress fall in love while chasing their dreams in Los Angeles.",
+         128, 8.0, "English", "2016-12-09",
+         "https://image.tmdb.org/t/p/w500/uDO8zWDhfWwoFdKS4fzkUJt0Rf0.jpg",
+         "#0a1a3e", 2500, 1, 0, '["Ryan Gosling","Emma Stone","John Legend"]', "Damien Chazelle", "PG-13"),
+        ("Me Before You", "Romance · Drama",
+         "A small-town woman takes a job caring for a paralysed man and the two develop an unexpected bond.",
+         110, 7.4, "English", "2016-06-03",
+         "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS1gpdh3TT2RWr9p8Z6kDRO1-U5srSTF4jauA&s",
+         "#2a0a1e", 2500, 0, 0, '["Emilia Clarke","Sam Claflin","Janet McTeer"]', "Thea Sharrock", "PG-13"),
+        ("Five Feet Apart", "Romance · Drama",
+         "Two teenagers with cystic fibrosis fall in love in a hospital but must always remain five feet apart.",
+         116, 7.2, "English", "2019-03-15",
+         "https://image.tmdb.org/t/p/w500/2Ah63TIvVmZM3hzUwR5hXFg2LEk.jpg",
+         "#0a1a2e", 2500, 0, 1, '["Cole Sprouse","Haley Lu Richardson","Moises Arias"]', "Justin Baldoni", "PG-13"),
+        ("Titanic", "Romance · Drama · History",
+         "A young aristocrat falls in love with a penniless artist aboard the ill-fated RMS Titanic.",
+         194, 7.9, "English", "1997-12-19",
+         "https://image.tmdb.org/t/p/w500/9xjZS2rlVxm8SFx8kPC3aIGCOYQ.jpg",
+         "#0a0a3e", 3500, 1, 0, '["Leonardo DiCaprio","Kate Winslet","Billy Zane"]', "James Cameron", "PG-13"),
+        ("A Tribe Called Judah", "Drama · Crime · Nollywood",
+         "A determined mother raises five sons in Lagos against poverty and hardship.",
+         135, 7.2, "Yoruba/English", "2023-12-15",
+         "https://image.tmdb.org/t/p/w500/placeholder.jpg",
+         "#1a2a0e", 2500, 1, 1, '["Funke Akindele","Timini Egbuson","Broda Shaggi"]', "Funke Akindele", "PG-13"),
+        ("The Black Book", "Action · Thriller · Nollywood",
+         "A deacon seeks revenge after his son is killed by corrupt police.",
+         130, 7.0, "English", "2023-09-22",
+         "https://image.tmdb.org/t/p/w500/placeholder2.jpg",
+         "#0a0a1e", 2500, 0, 1, '["Richard Mofe-Damijo","Sam Dede","Ireti Doyle"]', "Editi Effiong", "PG-13"),
     ]
-    
-    # Insert movies (extracting only needed fields from 15-element tuples)
-    for m in movies:
-        # Extract: title, genre, description, duration_min, rating, poster_url, director, cast_list, release_year
-        movie_data = (m[0], m[1], m[2], m[3], m[4], m[7], m[13], m[12], m[6])
-        db.execute(
-            """INSERT INTO movies (title,genre,description,duration_min,rating,
-               poster_url,director,cast_list,release_year) VALUES (?,?,?,?,?,?,?,?,?)""", movie_data)
 
-    # Real Abuja cinemas
+    movie_ids = []
+    for m in movies:
+        movie_data = (m[0], m[1], m[2], m[3], m[4], m[7], m[13], m[12], m[6])
+        cur.execute(
+            """INSERT INTO movies (title,genre,description,duration_min,rating,
+               poster_url,director,cast_list,release_year)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""", movie_data)
+        movie_ids.append(cur.fetchone()['id'])
+
     cinemas_data = [
         ("Silverbird Cinemas",   "Central Business District", "Silverbird Entertainment Centre, Herbert Macaulay Way, CBD, Abuja"),
         ("Genesis Cinemas",      "Ceddi Plaza, Central Area", "Ceddi Plaza, Michael Okpara Way, Wuse Zone 5, Abuja"),
@@ -774,12 +685,10 @@ def seed(db):
     ]
     cinema_ids = []
     for c in cinemas_data:
-        cur = db.execute("INSERT INTO cinemas (name,location,address) VALUES (?,?,?)", c)
-        cinema_ids.append(cur.lastrowid)
+        cur.execute("INSERT INTO cinemas (name,location,address) VALUES (%s,%s,%s) RETURNING id", c)
+        cinema_ids.append(cur.fetchone()['id'])
 
-    # Halls per cinema
     hall_configs = [
-        # (cinema_idx, hall_name, rows, cols)
         (0, "Hall 1 – Main",    12, 16),
         (0, "Hall 2 – Premium", 10, 14),
         (1, "Screen A",         10, 12),
@@ -791,19 +700,15 @@ def seed(db):
     ]
     hall_ids = []
     for ci, hname, rows, cols in hall_configs:
-        cur = db.execute(
-            """INSERT INTO halls (cinema_id,name,total_rows,total_cols,capacity)
-               VALUES (?,?,?,?,?)""",
+        cur.execute(
+            "INSERT INTO halls (cinema_id,name,total_rows,total_cols,capacity) VALUES (%s,%s,%s,%s,%s) RETURNING id",
             (cinema_ids[ci], hname, rows, cols, rows*cols))
-        hall_ids.append((cur.lastrowid, ci, hname, rows, cols))
+        hall_ids.append((cur.fetchone()['id'], ci, hname, rows, cols))
 
-    movie_ids = [r[0] for r in db.execute("SELECT id FROM movies").fetchall()]
     cinema_names = [c[0] for c in cinemas_data]
-
-    # Showtimes: next 5 days, multiple slots
-    base    = datetime.now().replace(minute=0, second=0, microsecond=0)
-    times   = [10, 13, 16, 19, 22]
-    prices  = [2500, 3000, 2000, 2000, 3500, 4000, 2500, 2000]  # per hall
+    base   = datetime.now().replace(minute=0, second=0, microsecond=0)
+    times  = [10, 13, 16, 19, 22]
+    prices = [2500, 3000, 2000, 2000, 3500, 4000, 2500, 2000]
 
     RL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     showtime_records = []
@@ -811,96 +716,86 @@ def seed(db):
         for t in times:
             hall_info = random.choice(hall_ids)
             hid, ci, hname, rows, cols = hall_info
-            mid  = random.choice(movie_ids)
-            show_dt = (base + timedelta(days=day)).replace(hour=t)
-            price = prices[hall_ids.index(hall_info)]
-            cname = cinema_names[ci]
-            cur = db.execute(
-                """INSERT INTO showtimes
-                   (movie_id,hall_id,hall_name,cinema_name,showtime,price)
-                   VALUES (?,?,?,?,?,?)""",
-                (mid, hid, hname, cname,
-                 show_dt.strftime('%Y-%m-%d %H:%M:%S'), price))
-            showtime_records.append((cur.lastrowid, hid, rows, cols))
+            mid      = random.choice(movie_ids)
+            show_dt  = (base + timedelta(days=day)).replace(hour=t)
+            price    = prices[hall_ids.index(hall_info)]
+            cname    = cinema_names[ci]
+            cur.execute(
+                "INSERT INTO showtimes (movie_id,hall_id,hall_name,cinema_name,showtime,price) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                (mid, hid, hname, cname, show_dt.strftime('%Y-%m-%d %H:%M:%S'), price))
+            showtime_records.append((cur.fetchone()['id'], hid, rows, cols))
 
-    #  Seats for each showtime
-    for stid, hid, rows, cols in showtime_records:
-        hall = db.execute("SELECT * FROM halls WHERE id=?", (hid,)).fetchone()
-        tr, tc = hall['total_rows'], hall['total_cols']
+    for stid, hid, tr, tc in showtime_records:
         for r in range(1, tr+1):
             for c in range(1, tc+1):
-                q    = compute_seat_quality(r, c, tr, tc)
-                tags = classify_seat(r, c, tr, tc)
-                # Pre-book ~25% of seats randomly
+                q      = compute_seat_quality(r, c, tr, tc)
+                tags   = classify_seat(r, c, tr, tc)
                 status = 'booked' if random.random() < 0.25 else 'available'
-                db.execute(
+                cur.execute(
                     """INSERT INTO seats
-                       (showtime_id,hall_id,row_num,col_num,row_label,
-                        seat_number,quality_score,position_tags,status)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (stid, hid, r, c, RL[r-1], c, q,
-                     json.dumps(tags), status))
+                       (showtime_id,hall_id,row_num,col_num,row_label,seat_number,quality_score,position_tags,status)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (stid, hid, r, c, RL[r-1], c, q, json.dumps(tags), status))
 
-    # Admin + demo users (pre-verified so they work without the email flow)
-    db.execute("INSERT OR IGNORE INTO users (username,email,password_hash,is_admin,is_verified) VALUES (?,?,?,?,?)",
-               ("admin","admin@ksync.ng", hash_pw("admin123"), 1, 1))
-    db.execute("INSERT OR IGNORE INTO users (username,email,password_hash,is_admin,is_verified) VALUES (?,?,?,?,?)",
-               ("demo","demo@ksync.ng", hash_pw("demo123"), 0, 1))
+    # Admin + demo users
+    for uname, email, pw, is_admin in [
+        ("admin", "admin@ksync.ng", "admin123", 1),
+        ("demo",  "demo@ksync.ng",  "demo123",  0),
+    ]:
+        cur.execute(
+            """INSERT INTO users (username,email,password_hash,is_admin,is_verified)
+               VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+            (uname, email, hash_pw(pw), is_admin, 1))
     db.commit()
 
-    # ── SYNTHETIC PEER USERS ────────────────────────────────────────────────
-    # These five users exist purely to give the collaborative filter enough
-    # peer booking history to produce non-zero Jaccard similarity scores.
-    # Without them the collab component is silent for a freshly seeded DB.
-    # Each user has a distinct genre profile so similarity values are varied.
+    # Synthetic peer users for collaborative filtering
     synthetic = [
-        ("peer_action",  "p1@ksync.ng", ["Action", "Superhero", "Adventure"]),
-        ("peer_comedy",  "p2@ksync.ng", ["Comedy", "Animation", "Family"]),
-        ("peer_drama",   "p3@ksync.ng", ["Drama", "History", "Musical"]),
-        ("peer_horror",  "p4@ksync.ng", ["Horror", "Thriller", "Sci-Fi"]),
-        ("peer_mixed",   "p5@ksync.ng", ["Action", "Comedy", "Drama", "Sci-Fi"]),
+        ("peer_action", "p1@ksync.ng", ["Action", "Superhero", "Adventure"]),
+        ("peer_comedy", "p2@ksync.ng", ["Comedy", "Animation", "Family"]),
+        ("peer_drama",  "p3@ksync.ng", ["Drama", "History", "Musical"]),
+        ("peer_horror", "p4@ksync.ng", ["Horror", "Thriller", "Sci-Fi"]),
+        ("peer_mixed",  "p5@ksync.ng", ["Action", "Comedy", "Drama", "Sci-Fi"]),
     ]
 
-    all_shows = db.execute(
-        "SELECT s.id as sid, m.genre as mgenre, m.id as mid "
-        "FROM showtimes s JOIN movies m ON s.movie_id=m.id"
-    ).fetchall()
+    cur.execute(
+        "SELECT s.id as sid, m.genre as mgenre, m.id as mid FROM showtimes s JOIN movies m ON s.movie_id=m.id"
+    )
+    all_shows = cur.fetchall()
 
     for uname, email, liked_genres in synthetic:
-        cur = db.execute(
-            "INSERT OR IGNORE INTO users (username,email,password_hash,is_admin,is_verified) VALUES (?,?,?,?,?)",
-            (uname, email, hash_pw("peer123"), 0, 1)
-        )
-        uid = cur.lastrowid
-        if not uid:  # already inserted on a re-seed
-            row = db.execute("SELECT id FROM users WHERE username=?", (uname,)).fetchone()
-            uid = row[0]
+        cur.execute(
+            """INSERT INTO users (username,email,password_hash,is_admin,is_verified)
+               VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id""",
+            (uname, email, hash_pw("peer123"), 0, 1))
+        row = cur.fetchone()
+        if row:
+            uid = row['id']
+        else:
+            cur.execute("SELECT id FROM users WHERE username=%s", (uname,))
+            uid = cur.fetchone()['id']
 
         booked_movies = set()
         for show in random.sample(list(all_shows), min(8, len(all_shows))):
             show_genres = [g.strip() for g in show['mgenre'].split('·') if g.strip()]
-            if not any(g in liked_genres for g in show_genres):
-                continue
-            if show['mid'] in booked_movies:
-                continue
-            avail = db.execute(
-                "SELECT id FROM seats WHERE showtime_id=? AND status='available' LIMIT 1",
-                (show['sid'],)
-            ).fetchone()
-            if not avail:
-                continue
-            db.execute(
-                "INSERT INTO bookings (user_id,showtime_id,seat_id,amount,status,payment_ref) "
-                "VALUES (?,?,?,?,?,?)",
-                (uid, show['sid'], avail[0], 3000, 'confirmed', f"SEED-{uid}-{show['sid']}")
-            )
-            db.execute("UPDATE seats SET status='booked' WHERE id=?", (avail[0],))
+            if not any(g in liked_genres for g in show_genres): continue
+            if show['mid'] in booked_movies: continue
+            cur.execute(
+                "SELECT id FROM seats WHERE showtime_id=%s AND status='available' LIMIT 1",
+                (show['sid'],))
+            avail = cur.fetchone()
+            if not avail: continue
+            cur.execute(
+                "INSERT INTO bookings (user_id,showtime_id,seat_id,amount,status,payment_ref) VALUES (%s,%s,%s,%s,%s,%s)",
+                (uid, show['sid'], avail['id'], 3000, 'confirmed', f"SEED-{uid}-{show['sid']}"))
+            cur.execute("UPDATE seats SET status='booked' WHERE id=%s", (avail['id'],))
             booked_movies.add(show['mid'])
-            learn_preferences(uid, show['mid'], avail[0], db=db)
+            learn_preferences(uid, show['mid'], avail['id'], db=db)
 
     db.commit()
+    cur.close()
 
-# Page Routes
+
+# ── Page Routes ───────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return render_template('index.html', paystack_public_key=PAYSTACK_PUBLIC_KEY)
@@ -910,7 +805,8 @@ def admin():
     if not session.get('is_admin'): return redirect('/')
     return render_template('admin.html')
 
-# Auth API
+
+# ── Auth API ──────────────────────────────────────────────────────────────────
 @app.route('/api/register', methods=['POST'])
 def register():
     d = request.get_json()
@@ -919,65 +815,41 @@ def register():
         return jsonify({'error': 'All fields required'}), 400
     if len(p) < 6:
         return jsonify({'error': 'Password min 6 characters'}), 400
-    if qdb("SELECT id FROM users WHERE username=? OR email=?", (u, e), one=True):
+    if qdb("SELECT id FROM users WHERE username=%s OR email=%s", (u, e), one=True):
         return jsonify({'error': 'Username or email already exists'}), 409
-
     uid = xdb(
-        "INSERT INTO users (username,email,password_hash,is_verified) VALUES (?,?,?,?)",
-        (u, e, hash_pw(p), 0)
-    )
-    # Generate email verification token
+        "INSERT INTO users (username,email,password_hash,is_verified) VALUES (%s,%s,%s,%s)",
+        (u, e, hash_pw(p), 0))
     token = secrets.token_urlsafe(32)
-    xdb("INSERT INTO email_verifications (user_id,token) VALUES (?,?)", (uid, token))
-
-
-    # NOTE: In production, send `token` via SMTP (SendGrid / AWS SES).
-    # For this demo deployment, the token is returned in the response
-    # so it can be verified immediately without an email server.
-    return jsonify({
-        'success': True,
-        'username': u,
-        'verification_token': token,
-        'message': 'Account created. Use the verification token to confirm your email.'
-    })
+    xdb("INSERT INTO email_verifications (user_id,token) VALUES (%s,%s)", (uid, token))
+    return jsonify({'success': True, 'username': u, 'verification_token': token,
+                    'message': 'Account created. Use the verification token to confirm your email.'})
 
 
 @app.route('/api/verify-email', methods=['POST'])
 def verify_email():
-    """
-    Accepts the verification token returned at registration (or sent via email
-    in production) and marks the user account as verified.
-    """
     token = (request.get_json() or {}).get('token', '').strip()
     if not token:
         return jsonify({'error': 'Token required'}), 400
-    record = qdb(
-        "SELECT * FROM email_verifications WHERE token=? AND verified=0",
-        (token,), one=True
-    )
+    record = qdb("SELECT * FROM email_verifications WHERE token=%s AND verified=0", (token,), one=True)
     if not record:
         return jsonify({'error': 'Invalid or already-used token'}), 400
     db = get_db()
-    db.execute("UPDATE users SET is_verified=1 WHERE id=?", (record['user_id'],))
-    db.execute("UPDATE email_verifications SET verified=1 WHERE id=?", (record['id'],))
+    cur = db.cursor()
+    cur.execute("UPDATE users SET is_verified=1 WHERE id=%s", (record['user_id'],))
+    cur.execute("UPDATE email_verifications SET verified=1 WHERE id=%s", (record['id'],))
     db.commit()
+    cur.close()
     return jsonify({'success': True, 'message': 'Email verified successfully'})
 
 
 @app.route('/api/login', methods=['POST'])
 def login():
     d = request.get_json()
-    user = qdb("SELECT * FROM users WHERE username=? OR email=?", (d.get('username', ''),) * 2, one=True)
-
-    # Define the generic message here
+    user = qdb("SELECT * FROM users WHERE username=%s OR email=%s", (d.get('username',''),)*2, one=True)
     error_msg = 'Invalid email or password'
-
-    if not user:
-        return jsonify({'error': error_msg}), 401
-
-    if not verify_pw(user['password_hash'], d.get('password', '')):
-        return jsonify({'error': error_msg}), 401
-
+    if not user: return jsonify({'error': error_msg}), 401
+    if not verify_pw(user['password_hash'], d.get('password','')): return jsonify({'error': error_msg}), 401
     session.update({'user_id': user['id'], 'username': user['username'], 'is_admin': bool(user['is_admin'])})
     return jsonify({'success': True, 'username': user['username'], 'is_admin': bool(user['is_admin'])})
 
@@ -991,21 +863,22 @@ def me():
     return jsonify({'logged_in':True,'user_id':session['user_id'],
                     'username':session['username'],'is_admin':session.get('is_admin',False)})
 
-# Movie API
+
+# ── Movie API ─────────────────────────────────────────────────────────────────
 @app.route('/api/movies')
 def get_movies():
     genre  = request.args.get('genre')
     search = request.args.get('search')
     sql = "SELECT * FROM movies WHERE is_active=1"
     args = []
-    if genre:  sql += " AND genre=?"; args.append(genre)
-    if search: sql += " AND (title LIKE ? OR description LIKE ?)"; args += [f'%{search}%']*2
+    if genre:  sql += " AND genre=%s";                           args.append(genre)
+    if search: sql += " AND (title ILIKE %s OR description ILIKE %s)"; args += [f'%{search}%']*2
     sql += " ORDER BY rating DESC"
     return jsonify([dict(m) for m in qdb(sql, args)])
 
 @app.route('/api/movies/<int:mid>')
 def get_movie(mid):
-    m = qdb("SELECT * FROM movies WHERE id=?", (mid,), one=True)
+    m = qdb("SELECT * FROM movies WHERE id=%s", (mid,), one=True)
     if not m: return jsonify({'error':'Not found'}), 404
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     sts = qdb(
@@ -1016,8 +889,8 @@ def get_movie(mid):
            LEFT JOIN halls h ON s.hall_id=h.id
            LEFT JOIN cinemas c ON h.cinema_id=c.id
            LEFT JOIN seats se ON se.showtime_id=s.id
-           WHERE s.movie_id=? AND s.showtime>=?
-           GROUP BY s.id ORDER BY s.showtime""", (mid, now))
+           WHERE s.movie_id=%s AND s.showtime>=%s
+           GROUP BY s.id, c.name, c.address ORDER BY s.showtime""", (mid, now))
     return jsonify({'movie':dict(m),'showtimes':[dict(s) for s in sts]})
 
 @app.route('/api/recommendations')
@@ -1031,128 +904,83 @@ def genres():
 
 @app.route('/api/genre-matcher', methods=['POST'])
 def genre_matcher():
-    """
-    Rule-based genre + seat preference matcher.
-    Accepts: genres (list), seat_position (str), seat_zone (str), min_rating (float)
-    Returns: ranked list of matching movies with showtimes and seat info.
-    """
     d = request.get_json() or {}
-    genres_wanted   = d.get('genres', [])
-    seat_position   = d.get('seat_position', '')   # center / aisle / edge
-    seat_zone       = d.get('seat_zone', '')        # front / middle / back
-    min_rating      = float(d.get('min_rating', 0))
-    max_results     = int(d.get('max_results', 10))
-
+    genres_wanted = d.get('genres', [])
+    seat_position = d.get('seat_position', '')
+    seat_zone     = d.get('seat_zone', '')
+    min_rating    = float(d.get('min_rating', 0))
+    max_results   = int(d.get('max_results', 10))
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    # Build movie filter
     sql = "SELECT * FROM movies WHERE is_active=1"
     args = []
     if genres_wanted:
-        placeholders = ','.join('?' * len(genres_wanted))
+        placeholders = ','.join('%s' * len(genres_wanted))
         sql += f" AND genre IN ({placeholders})"
         args += genres_wanted
     if min_rating > 0:
-        sql += " AND rating >= ?"
+        sql += " AND rating >= %s"
         args.append(min_rating)
     sql += " ORDER BY rating DESC"
 
-    movies = qdb(sql, args)
-    if not movies:
-        return jsonify([])
+    movies_rows = qdb(sql, args)
+    if not movies_rows: return jsonify([])
 
     results = []
-    for m in movies:
+    for m in movies_rows:
         mid = m['id']
-        # Find best showtime for this movie
         showtimes = qdb("""
             SELECT s.*, COUNT(se.id) as total_seats,
                    SUM(CASE WHEN se.status='available' THEN 1 ELSE 0 END) as avail_seats,
                    AVG(CASE WHEN se.status='available' THEN se.quality_score END) as avg_quality
             FROM showtimes s
-            LEFT JOIN seats se ON se.showtime_id = s.id
-            WHERE s.movie_id=? AND s.showtime>=?
-            GROUP BY s.id HAVING avail_seats > 0
+            LEFT JOIN seats se ON se.showtime_id=s.id
+            WHERE s.movie_id=%s AND s.showtime>=%s
+            GROUP BY s.id HAVING SUM(CASE WHEN se.status='available' THEN 1 ELSE 0 END) > 0
             ORDER BY s.showtime
         """, (mid, now))
+        if not showtimes: continue
 
-        if not showtimes:
-            continue
-
-        # Score each showtime by seat preference match
-        best_st = None
-        best_score = -1
-
+        best_st, best_score = None, -1
         for st in showtimes:
-            avail_seats = qdb("""
-                SELECT * FROM seats WHERE showtime_id=? AND status='available'
-            """, (st['id'],))
-
-            if not avail_seats:
-                continue
-
-            score = 0
-            matched_seats = 0
-
+            avail_seats = qdb("SELECT * FROM seats WHERE showtime_id=%s AND status='available'", (st['id'],))
+            if not avail_seats: continue
+            score, matched = 0, 0
             for seat in avail_seats:
                 tags = json.loads(seat['position_tags']) if seat['position_tags'] else []
-                pos_match  = 1 if seat_position in tags else 0
-                zone_match = 1 if seat_zone in tags else 0
-                score += (float(seat['quality_score']) / 10) + pos_match * 0.5 + zone_match * 0.3
-                matched_seats += 1
-
-            if matched_seats > 0:
-                avg_score = score / matched_seats
+                score += (float(seat['quality_score'])/10) + (1 if seat_position in tags else 0)*0.5 + (1 if seat_zone in tags else 0)*0.3
+                matched += 1
+            if matched > 0:
+                avg_score = score/matched
                 if avg_score > best_score:
-                    best_score = avg_score
-                    best_st = st
+                    best_score, best_st = avg_score, st
 
-        if not best_st:
-            continue
+        if not best_st: continue
 
-        # Find best individual seat matching preferences
-        avail = qdb("""
-            SELECT * FROM seats WHERE showtime_id=? AND status='available'
-            ORDER BY quality_score DESC
-        """, (best_st['id'],))
-
-        best_seat = None
-        best_seat_score = -1
+        avail = qdb("SELECT * FROM seats WHERE showtime_id=%s AND status='available' ORDER BY quality_score DESC", (best_st['id'],))
+        best_seat, best_seat_score = None, -1
         for seat in avail:
             tags = json.loads(seat['position_tags']) if seat['position_tags'] else []
             s = float(seat['quality_score'])
             if seat_position in tags: s += 3
             if seat_zone in tags:     s += 2
             if s > best_seat_score:
-                best_seat_score = s
-                best_seat = dict(seat)
+                best_seat_score, best_seat = s, dict(seat)
 
-        total   = best_st['total_seats'] or 1
+        total  = best_st['total_seats'] or 1
         avail_n = best_st['avail_seats'] or 0
-
         results.append({
-            'movie_id':       mid,
-            'showtime_id':    best_st['id'],
-            'title':          m['title'],
-            'genre':          m['genre'],
-            'rating':         m['rating'],
-            'description':    m['description'],
-            'poster_url':     m['poster_url'],
-            'duration_min':   m['duration_min'],
-            'director':       m['director'],
-            'cast_list':      m['cast_list'],
-            'showtime':       best_st['showtime'],
-            'hall_name':      best_st['hall_name'],
-            'cinema_name':    best_st['cinema_name'],
-            'price':          best_st['price'],
-            'available_seats': avail_n,
-            'total_seats':    total,
-            'avail_pct':      round(avail_n / total * 100),
-            'best_seat':      best_seat,
-            'match_score':    round(best_score, 3),
+            'movie_id': mid, 'showtime_id': best_st['id'],
+            'title': m['title'], 'genre': m['genre'], 'rating': m['rating'],
+            'description': m['description'], 'poster_url': m['poster_url'],
+            'duration_min': m['duration_min'], 'director': m['director'],
+            'cast_list': m['cast_list'], 'showtime': str(best_st['showtime']),
+            'hall_name': best_st['hall_name'], 'cinema_name': best_st['cinema_name'],
+            'price': best_st['price'], 'available_seats': avail_n, 'total_seats': total,
+            'avail_pct': round(avail_n/total*100), 'best_seat': best_seat,
+            'match_score': round(best_score, 3),
         })
 
-    # Sort by rating desc then match score
     results.sort(key=lambda x: (x['rating'], x['match_score']), reverse=True)
     return jsonify(results[:max_results])
 
@@ -1166,67 +994,59 @@ def my_prefs():
     return jsonify(get_prefs(session['user_id']))
 
 
-# Seat API (Fixed for Timezone Sync)
+# ── Seat API ──────────────────────────────────────────────────────────────────
 @app.route('/api/seats/<int:sid>')
 def get_seats(sid):
     now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     db  = get_db()
-    db.execute("""
-        UPDATE seats
-        SET status='available', locked_by=NULL, locked_until=NULL
-        WHERE showtime_id=? AND status='locked' AND locked_until<?
+    cur = db.cursor()
+    cur.execute("""
+        UPDATE seats SET status='available', locked_by=NULL, locked_until=NULL
+        WHERE showtime_id=%s AND status='locked' AND locked_until<%s
     """, (sid, now))
     db.commit()
+    cur.close()
 
     seats = qdb(
         """SELECT id, row_num, col_num, row_label, seat_number,
                   quality_score, position_tags, status,
-                  CASE WHEN locked_by=? THEN 1 ELSE 0 END as my_lock
-           FROM seats WHERE showtime_id=? ORDER BY row_num, col_num""",
+                  CASE WHEN locked_by=%s THEN 1 ELSE 0 END as my_lock
+           FROM seats WHERE showtime_id=%s ORDER BY row_num, col_num""",
         (session.get('user_id', -1), sid))
 
     st = qdb(
-        """SELECT s.*, m.title
-           FROM showtimes s JOIN movies m ON s.movie_id=m.id
-           WHERE s.id=?""", (sid,), one=True)
-    if not st:
-        return jsonify({'error': 'Not found'}), 404
+        "SELECT s.*, m.title FROM showtimes s JOIN movies m ON s.movie_id=m.id WHERE s.id=%s",
+        (sid,), one=True)
+    if not st: return jsonify({'error': 'Not found'}), 404
 
-    # ── Compute Q_pref for every available seat if the user is logged in ──
-    # Q_obj  (quality_score) is already stored on the seat — no computation needed.
-    # Q_pref is personal: we compare each seat's tags + Q_obj against the
-    # user's learned preferences from user_preferences.
     user_id = session.get('user_id')
     prefs   = get_prefs(user_id) if user_id else None
-
     seat_list = []
     for s in seats:
         row = dict(s)
-
-        # Q_obj — already stored, just label it clearly
-        row['q_obj']  = round(float(s['quality_score']), 2)
-
-        # Q_pref — computed live against this user's preference profile
+        row['q_obj'] = round(float(s['quality_score']), 2)
         if prefs and s['status'] == 'available':
-            tags      = json.loads(s['position_tags']) if s['position_tags'] else []
-            q_obj     = float(s['quality_score'])
-            pos_pref  = prefs.get('seat_position_pref', 'center')
-            zone_pref = prefs.get('seat_zone_pref',     'middle')
-            avg_q     = float(prefs.get('avg_quality_pref', 7.0))
-
+            tags     = json.loads(s['position_tags']) if s['position_tags'] else []
+            q_obj    = float(s['quality_score'])
+            pos_pref = prefs.get('seat_position_pref', 'center')
+            zone_pref= prefs.get('seat_zone_pref',     'middle')
+            avg_q    = float(prefs.get('avg_quality_pref', 7.0))
             pm = 1.0 if pos_pref in tags else (0.5 if 'aisle' in tags else 0.2)
             zm = 1.0 if zone_pref in tags else 0.35
             qm = max(0.0, 1.0 - abs(q_obj - avg_q) / 10.0)
-
-            row['q_pref']      = round(pm * 0.40 + zm * 0.30 + qm * 0.30, 4)
-            row['q_pref_pct']  = round(row['q_pref'] * 100)   # 0–100 for display
+            row['q_pref']     = round(pm*0.40 + zm*0.30 + qm*0.30, 4)
+            row['q_pref_pct'] = round(row['q_pref']*100)
         else:
-            row['q_pref']     = None   # not logged in or seat not available
-            row['q_pref_pct'] = None
-
+            row['q_pref'] = row['q_pref_pct'] = None
+        # Convert datetime fields to string for JSON serialisation
+        for k, v in row.items():
+            if hasattr(v, 'strftime'): row[k] = str(v)
         seat_list.append(row)
 
-    return jsonify({'seats': seat_list, 'showtime': dict(st)})
+    st_dict = dict(st)
+    for k, v in st_dict.items():
+        if hasattr(v, 'strftime'): st_dict[k] = str(v)
+    return jsonify({'seats': seat_list, 'showtime': st_dict})
 
 
 @app.route('/api/seats/lock', methods=['POST'])
@@ -1234,89 +1054,82 @@ def get_seats(sid):
 def lock_seat():
     d = request.get_json()
     seat_id, showtime_id = d.get('seat_id'), d.get('showtime_id')
-
-    # Fix: Use utcnow() for consistent server-side timing
     now = datetime.utcnow()
     now_str = now.strftime('%Y-%m-%d %H:%M:%S')
-    db = get_db()
-
-    # Clear expired locks globally before checking availability
-    db.execute("""
-        UPDATE seats SET status='available', locked_by=NULL, locked_until=NULL 
-        WHERE status='locked' AND locked_until<?
+    db  = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        UPDATE seats SET status='available', locked_by=NULL, locked_until=NULL
+        WHERE status='locked' AND locked_until<%s
     """, (now_str,))
-
-    seat = qdb("SELECT * FROM seats WHERE id=? AND showtime_id=?", (seat_id, showtime_id), one=True)
-    if not seat: return jsonify({'error': 'Seat not found'}), 404
-    if seat['status'] == 'booked': return jsonify({'error': 'Seat already booked'}), 409
-
+    cur.execute("SELECT * FROM seats WHERE id=%s AND showtime_id=%s", (seat_id, showtime_id))
+    seat = cur.fetchone()
+    if not seat: cur.close(); return jsonify({'error':'Seat not found'}), 404
+    if seat['status'] == 'booked': cur.close(); return jsonify({'error':'Seat already booked'}), 409
     if seat['status'] == 'locked' and seat['locked_by'] != session['user_id']:
-        return jsonify({'error': 'Seat is held by another user'}), 409
-
-    # Release any other seat this specific user was holding for this showtime
-    db.execute("""
-        UPDATE seats SET status='available', locked_by=NULL, locked_until=NULL 
-        WHERE showtime_id=? AND locked_by=? AND status='locked'
+        cur.close(); return jsonify({'error':'Seat is held by another user'}), 409
+    cur.execute("""
+        UPDATE seats SET status='available', locked_by=NULL, locked_until=NULL
+        WHERE showtime_id=%s AND locked_by=%s AND status='locked'
     """, (showtime_id, session['user_id']))
-
-    # Fix: Set expiration and format as string for SQLite
-    lock_until_dt = now + timedelta(seconds=LOCK_DURATION)
-    lock_until_str = lock_until_dt.strftime('%Y-%m-%d %H:%M:%S')
-
-    db.execute("""
-        UPDATE seats SET status='locked', locked_by=?, locked_until=? 
-        WHERE id=?
-    """, (session['user_id'], lock_until_str, seat_id))
+    lock_until = (now + timedelta(seconds=LOCK_DURATION)).strftime('%Y-%m-%d %H:%M:%S')
+    cur.execute("UPDATE seats SET status='locked', locked_by=%s, locked_until=%s WHERE id=%s",
+                (session['user_id'], lock_until, seat_id))
     db.commit()
+    cur.close()
+    return jsonify({'success': True, 'locked_until': lock_until})
 
-    # Return the string. Important: In your frontend app.js, append 'Z' to this string so Javascript knows it is UTC!
-    return jsonify({'success': True, 'locked_until': lock_until_str})
+
 @app.route('/api/seats/unlock', methods=['POST'])
 @auth_required
 def unlock_seat():
     seat_id = request.get_json().get('seat_id')
     db = get_db()
-    db.execute("UPDATE seats SET status='available',locked_by=NULL,locked_until=NULL WHERE id=? AND locked_by=?", (seat_id, session['user_id']))
+    cur = db.cursor()
+    cur.execute("UPDATE seats SET status='available',locked_by=NULL,locked_until=NULL WHERE id=%s AND locked_by=%s",
+                (seat_id, session['user_id']))
     db.commit()
+    cur.close()
     return jsonify({'success':True})
 
-# Booking APIs
+
+# ── Booking API ───────────────────────────────────────────────────────────────
 @app.route('/api/bookings/initiate', methods=['POST'])
 @auth_required
 def initiate_booking():
     d = request.get_json()
     sid, seat_id = d.get('showtime_id'), d.get('seat_id')
-    seat = qdb("SELECT * FROM seats WHERE id=? AND showtime_id=? AND locked_by=?", (seat_id, sid, session['user_id']), one=True)
+    seat = qdb("SELECT * FROM seats WHERE id=%s AND showtime_id=%s AND locked_by=%s",
+               (seat_id, sid, session['user_id']), one=True)
     if not seat: return jsonify({'error':'Seat not held by you. Please select again.'}), 400
-    st = qdb("SELECT * FROM showtimes WHERE id=?", (sid,), one=True)
+    st = qdb("SELECT * FROM showtimes WHERE id=%s", (sid,), one=True)
     if not st: return jsonify({'error':'Showtime not found'}), 404
     pay_ref = f"ABC-{secrets.token_urlsafe(10).upper()}"
     amount  = float(st['price'])
-    bid = xdb("INSERT INTO bookings (user_id,showtime_id,seat_id,amount,status,payment_ref) VALUES (?,?,?,?,?,?)",
+    bid = xdb("INSERT INTO bookings (user_id,showtime_id,seat_id,amount,status,payment_ref) VALUES (%s,%s,%s,%s,%s,%s)",
               (session['user_id'], sid, seat_id, amount, 'pending', pay_ref))
-    user = qdb("SELECT email FROM users WHERE id=?", (session['user_id'],), one=True)
+    user = qdb("SELECT email FROM users WHERE id=%s", (session['user_id'],), one=True)
     return jsonify({'booking_id':bid,'payment_ref':pay_ref,'amount':amount,
                     'amount_kobo':int(amount*100),'email':user['email'],
                     'public_key':PAYSTACK_PUBLIC_KEY})
 
+
 @app.route('/api/bookings/verify', methods=['POST'])
 @auth_required
 def verify_booking():
-    """Called only after Paystack inline popup returns success."""
     d = request.get_json()
     bid, ps_ref = d.get('booking_id'), d.get('paystack_ref')
-    booking = qdb("SELECT * FROM bookings WHERE id=? AND user_id=?", (bid, session['user_id']), one=True)
+    booking = qdb("SELECT * FROM bookings WHERE id=%s AND user_id=%s",
+                  (bid, session['user_id']), one=True)
     if not booking: return jsonify({'error':'Booking not found'}), 404
-    # In production, verify with Paystack API using PAYSTACK_SECRET_KEY:
-    # GET https://api.paystack.co/transaction/verify/{ps_ref}
-    # For the scope of this project, we trust the reference returned by Paystack JS inline.
-    db = get_db()
-    db.execute("UPDATE bookings SET status='confirmed',paystack_ref=? WHERE id=?", (ps_ref, bid))
-    db.execute("UPDATE seats SET status='booked',locked_by=NULL,locked_until=NULL WHERE id=?", (booking['seat_id'],))
+    db  = get_db()
+    cur = db.cursor()
+    cur.execute("UPDATE bookings SET status='confirmed',paystack_ref=%s WHERE id=%s", (ps_ref, bid))
+    cur.execute("UPDATE seats SET status='booked',locked_by=NULL,locked_until=NULL WHERE id=%s", (booking['seat_id'],))
     db.commit()
-    st = qdb("SELECT movie_id FROM showtimes WHERE id=?", (booking['showtime_id'],), one=True)
+    cur.close()
+    st = qdb("SELECT movie_id FROM showtimes WHERE id=%s", (booking['showtime_id'],), one=True)
     if st: learn_preferences(session['user_id'], st['movie_id'], booking['seat_id'])
-    
     det = qdb(
         """SELECT b.*,m.title,m.poster_url,s.showtime,s.hall_name,s.cinema_name,s.price,
                   se.row_label,se.seat_number,se.quality_score,se.position_tags
@@ -1324,8 +1137,12 @@ def verify_booking():
            JOIN showtimes s ON b.showtime_id=s.id
            JOIN movies m ON s.movie_id=m.id
            JOIN seats se ON b.seat_id=se.id
-           WHERE b.id=?""", (bid,), one=True)
-    return jsonify({'success':True,'booking':dict(det)})
+           WHERE b.id=%s""", (bid,), one=True)
+    det_dict = dict(det)
+    for k, v in det_dict.items():
+        if hasattr(v, 'strftime'): det_dict[k] = str(v)
+    return jsonify({'success':True,'booking':det_dict})
+
 
 @app.route('/api/my-bookings')
 @auth_required
@@ -1337,11 +1154,17 @@ def my_bookings():
            JOIN showtimes s ON b.showtime_id=s.id
            JOIN movies m ON s.movie_id=m.id
            JOIN seats se ON b.seat_id=se.id
-           WHERE b.user_id=?
-           ORDER BY b.created_at DESC""", (session['user_id'],))
-    return jsonify([dict(r) for r in rows])
+           WHERE b.user_id=%s ORDER BY b.created_at DESC""", (session['user_id'],))
+    result = []
+    for r in rows:
+        row = dict(r)
+        for k, v in row.items():
+            if hasattr(v, 'strftime'): row[k] = str(v)
+        result.append(row)
+    return jsonify(result)
 
-# Admin API
+
+# ── Admin API ─────────────────────────────────────────────────────────────────
 @app.route('/api/admin/stats')
 @admin_required
 def admin_stats():
@@ -1353,121 +1176,109 @@ def admin_stats():
         'popular_movies': [dict(r) for r in qdb(
             """SELECT m.title,COUNT(b.id) as bookings FROM bookings b
                JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id
-               WHERE b.status='confirmed' GROUP BY m.id ORDER BY bookings DESC LIMIT 5""")],
+               WHERE b.status='confirmed' GROUP BY m.id,m.title ORDER BY bookings DESC LIMIT 5""")],
     })
+
 
 @app.route('/api/admin/movies', methods=['GET','POST'])
 @admin_required
 def admin_movies():
     if request.method == 'POST':
         d = request.get_json()
-        mid = xdb("INSERT INTO movies (title,genre,description,duration_min,rating,poster_url,director,cast_list,release_year) VALUES (?,?,?,?,?,?,?,?,?)",
-                  (d['title'],d['genre'],d.get('description',''),d.get('duration_min',120),d.get('rating',7.0),d.get('poster_url',''),d.get('director',''),d.get('cast_list',''),d.get('release_year',2026)))
+        mid = xdb(
+            "INSERT INTO movies (title,genre,description,duration_min,rating,poster_url,director,cast_list,release_year) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (d['title'],d['genre'],d.get('description',''),d.get('duration_min',120),d.get('rating',7.0),
+             d.get('poster_url',''),d.get('director',''),d.get('cast_list',''),d.get('release_year',2026)))
         return jsonify({'success':True,'movie_id':mid})
     return jsonify([dict(m) for m in qdb("SELECT * FROM movies ORDER BY created_at DESC")])
+
 
 @app.route('/api/admin/movies/<int:mid>', methods=['PUT','DELETE'])
 @admin_required
 def admin_movie(mid):
     if request.method == 'DELETE':
-        xdb("UPDATE movies SET is_active=0 WHERE id=?", (mid,))
+        xdb("UPDATE movies SET is_active=0 WHERE id=%s RETURNING id", (mid,))
         return jsonify({'success':True})
     d = request.get_json()
-    xdb("UPDATE movies SET title=?,genre=?,description=?,duration_min=?,rating=?,poster_url=?,director=?,is_active=? WHERE id=?",
-        (d['title'],d['genre'],d.get('description'),d.get('duration_min',120),d.get('rating',7),d.get('poster_url'),d.get('director'),d.get('is_active',1),mid))
+    xdb("UPDATE movies SET title=%s,genre=%s,description=%s,duration_min=%s,rating=%s,poster_url=%s,director=%s,cast_list=%s,release_year=%s,is_active=%s WHERE id=%s RETURNING id",
+        (d['title'],d['genre'],d.get('description',''),d.get('duration_min',120),d.get('rating',7.0),
+         d.get('poster_url',''),d.get('director',''),d.get('cast_list',''),d.get('release_year',2026),
+         d.get('is_active',1),mid))
     return jsonify({'success':True})
 
-@app.route('/api/admin/showtimes', methods=['GET', 'POST'])
+
+@app.route('/api/admin/showtimes', methods=['GET','POST'])
 @admin_required
 def admin_showtimes():
     if request.method == 'POST':
         d = request.get_json()
-        hall = qdb("SELECT h.*,c.name as cname FROM halls h JOIN cinemas c ON h.cinema_id=c.id WHERE h.id=?",
+        hall = qdb("SELECT h.*,c.name as cname FROM halls h JOIN cinemas c ON h.cinema_id=c.id WHERE h.id=%s",
                    (d['hall_id'],), one=True)
-        if not hall:
-            return jsonify({'error': 'Hall not found'}), 404
+        if not hall: return jsonify({'error': 'Hall not found'}), 404
 
-        # Conflict check — block overlapping showtimes in same hall
         conflict = qdb("""
             SELECT s.id, m.title, s.showtime, m.duration_min
-            FROM showtimes s JOIN movies m ON s.movie_id = m.id
-            WHERE s.hall_id = ?
-              AND datetime(s.showtime, '+' || m.duration_min || ' minutes') > datetime(?)
-              AND datetime(s.showtime) < datetime(?, '+' || (
-                    SELECT duration_min FROM movies WHERE id=?
-                  ) || ' minutes')
+            FROM showtimes s JOIN movies m ON s.movie_id=m.id
+            WHERE s.hall_id=%s
+              AND (s.showtime + (m.duration_min || ' minutes')::interval) > %s::timestamp
+              AND s.showtime < (%s::timestamp + ((SELECT duration_min FROM movies WHERE id=%s) || ' minutes')::interval)
         """, (d['hall_id'], d['showtime'], d['showtime'], d['movie_id']), one=True)
-
         if conflict:
-            return jsonify({
-                'error': f"Hall conflict: \"{conflict['title']}\" is already scheduled at "
-                         f"{conflict['showtime']} and runs for {conflict['duration_min']} min. "
-                         f"Please choose a different time or hall."
-            }), 409
+            return jsonify({'error': f"Hall conflict: \"{conflict['title']}\" is already scheduled at {conflict['showtime']} and runs for {conflict['duration_min']} min."}), 409
 
         stid = xdb(
-            "INSERT INTO showtimes (movie_id,hall_id,hall_name,cinema_name,showtime,price) VALUES (?,?,?,?,?,?)",
-            (d['movie_id'], d['hall_id'], hall['name'], hall['cname'], d['showtime'], d['price'])
-        )
-        db = get_db()
+            "INSERT INTO showtimes (movie_id,hall_id,hall_name,cinema_name,showtime,price) VALUES (%s,%s,%s,%s,%s,%s)",
+            (d['movie_id'], d['hall_id'], hall['name'], hall['cname'], d['showtime'], d['price']))
+
+        db  = get_db()
+        cur = db.cursor()
         RL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        for r in range(1, hall['total_rows'] + 1):
-            for c in range(1, hall['total_cols'] + 1):
+        for r in range(1, hall['total_rows']+1):
+            for c in range(1, hall['total_cols']+1):
                 q    = compute_seat_quality(r, c, hall['total_rows'], hall['total_cols'])
                 tags = classify_seat(r, c, hall['total_rows'], hall['total_cols'])
-                db.execute(
-                    "INSERT INTO seats (showtime_id,hall_id,row_num,col_num,row_label,seat_number,quality_score,position_tags,status) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (stid, hall['id'], r, c, RL[r-1], c, q, json.dumps(tags), 'available')
-                )
+                cur.execute(
+                    "INSERT INTO seats (showtime_id,hall_id,row_num,col_num,row_label,seat_number,quality_score,position_tags,status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (stid, hall['id'], r, c, RL[r-1], c, q, json.dumps(tags), 'available'))
         db.commit()
+        cur.close()
         return jsonify({'success': True, 'showtime_id': stid})
 
     rows = qdb("SELECT s.*,m.title FROM showtimes s JOIN movies m ON s.movie_id=m.id ORDER BY s.showtime DESC LIMIT 60")
-    return jsonify([dict(r) for r in rows])
+    result = []
+    for r in rows:
+        row = dict(r)
+        for k, v in row.items():
+            if hasattr(v, 'strftime'): row[k] = str(v)
+        result.append(row)
+    return jsonify(result)
 
-# For editing showtimw
-@app.route('/api/admin/showtimes/<int:sid>', methods=['PUT', 'DELETE'])
+
+@app.route('/api/admin/showtimes/<int:sid>', methods=['PUT','DELETE'])
 @admin_required
 def admin_showtime_detail(sid):
     if request.method == 'DELETE':
-        xdb("DELETE FROM seats WHERE showtime_id=?", (sid,))
-        xdb("DELETE FROM bookings WHERE showtime_id=?", (sid,))
-        xdb("DELETE FROM showtimes WHERE id=?", (sid,))
+        xdb("DELETE FROM seats WHERE showtime_id=%s RETURNING showtime_id", (sid,))
+        xdb("DELETE FROM bookings WHERE showtime_id=%s RETURNING showtime_id", (sid,))
+        xdb("DELETE FROM showtimes WHERE id=%s", (sid,))
         return jsonify({'success': True})
-
-    # PUT — edit existing showtime
     d = request.get_json()
-    showtime = d.get('showtime')
-    price    = d.get('price')
-    if not showtime or price is None:
-        return jsonify({'error': 'showtime and price are required'}), 400
-
-    st = qdb("SELECT * FROM showtimes WHERE id=?", (sid,), one=True)
-    if not st:
-        return jsonify({'error': 'Showtime not found'}), 404
-
-    # Conflict check — exclude the showtime being edited
+    showtime, price = d.get('showtime'), d.get('price')
+    if not showtime or price is None: return jsonify({'error': 'showtime and price required'}), 400
+    st = qdb("SELECT * FROM showtimes WHERE id=%s", (sid,), one=True)
+    if not st: return jsonify({'error': 'Showtime not found'}), 404
     conflict = qdb("""
         SELECT s.id, m.title, s.showtime, m.duration_min
-        FROM showtimes s JOIN movies m ON s.movie_id = m.id
-        WHERE s.hall_id = ?
-          AND s.id != ?
-          AND datetime(s.showtime, '+' || m.duration_min || ' minutes') > datetime(?)
-          AND datetime(s.showtime) < datetime(?, '+' || (
-                SELECT duration_min FROM movies WHERE id=?
-              ) || ' minutes')
+        FROM showtimes s JOIN movies m ON s.movie_id=m.id
+        WHERE s.hall_id=%s AND s.id!=%s
+          AND (s.showtime + (m.duration_min || ' minutes')::interval) > %s::timestamp
+          AND s.showtime < (%s::timestamp + ((SELECT duration_min FROM movies WHERE id=%s) || ' minutes')::interval)
     """, (st['hall_id'], sid, showtime, showtime, st['movie_id']), one=True)
-
     if conflict:
-        return jsonify({
-            'error': f"Hall conflict: \"{conflict['title']}\" is already scheduled at "
-                     f"{conflict['showtime']} and runs for {conflict['duration_min']} min. "
-                     f"Please choose a different time."
-        }), 409
-
-    xdb("UPDATE showtimes SET showtime=?, price=? WHERE id=?",
-        (showtime, float(price), sid))
+        return jsonify({'error': f"Hall conflict: \"{conflict['title']}\" is already scheduled at {conflict['showtime']} and runs for {conflict['duration_min']} min."}), 409
+    xdb("UPDATE showtimes SET showtime=%s, price=%s WHERE id=%s", (showtime, float(price), sid))
     return jsonify({'success': True})
+
 
 @app.route('/api/admin/bookings')
 @admin_required
@@ -1480,79 +1291,69 @@ def admin_bookings():
            JOIN movies m ON s.movie_id=m.id
            JOIN seats se ON b.seat_id=se.id
            ORDER BY b.created_at DESC LIMIT 100""")
-    return jsonify([dict(r) for r in rows])
+    result = []
+    for r in rows:
+        row = dict(r)
+        for k, v in row.items():
+            if hasattr(v, 'strftime'): row[k] = str(v)
+        result.append(row)
+    return jsonify(result)
+
 
 @app.route('/api/halls')
 def get_halls():
     return jsonify([dict(h) for h in qdb("SELECT h.*,c.name as cinema_name FROM halls h JOIN cinemas c ON h.cinema_id=c.id")])
 
+
 @app.route('/api/admin/analytics')
 @admin_required
 def admin_analytics():
-    with get_db() as conn:
-        # Bookings by genre → data.genres
-        genres_raw = conn.execute("""
-            SELECT m.genre, COUNT(b.id) as bookings
-            FROM bookings b
-            JOIN showtimes st ON b.showtime_id = st.id
-            JOIN movies m ON st.movie_id = m.id
-            WHERE b.status='confirmed'
-            GROUP BY m.genre
-            ORDER BY bookings DESC
-            LIMIT 8
-        """).fetchall()
+    genres_raw = qdb("""
+        SELECT m.genre, COUNT(b.id) as bookings
+        FROM bookings b
+        JOIN showtimes st ON b.showtime_id=st.id
+        JOIN movies m ON st.movie_id=m.id
+        WHERE b.status='confirmed'
+        GROUP BY m.genre ORDER BY bookings DESC LIMIT 8
+    """)
+    genre_counts = {}
+    for row in genres_raw:
+        for g in row['genre'].split('·'):
+            g = g.strip()
+            if g: genre_counts[g] = genre_counts.get(g, 0) + row['bookings']
+    genres = [{'label': k, 'value': v}
+              for k, v in sorted(genre_counts.items(), key=lambda x: -x[1])[:8]]
 
-        # Flatten genres (each movie has "Action · Comedy · Sci-Fi" etc.)
-        genre_counts = {}
-        for row in genres_raw:
-            for g in row['genre'].split('·'):
-                g = g.strip()
-                if g:
-                    genre_counts[g] = genre_counts.get(g, 0) + row['bookings']
-        genres = [{'label': k, 'value': v}
-                  for k, v in sorted(genre_counts.items(), key=lambda x: -x[1])[:8]]
+    movies_raw = qdb("""
+        SELECT m.title, COUNT(b.id) as bookings
+        FROM movies m
+        LEFT JOIN showtimes st ON st.movie_id=m.id
+        LEFT JOIN bookings b ON b.showtime_id=st.id AND b.status='confirmed'
+        GROUP BY m.id, m.title ORDER BY bookings DESC LIMIT 6
+    """)
+    movies_data = [{'label': r['title'], 'value': r['bookings']} for r in movies_raw]
 
-        # Bookings by movie → data.movies
-        movies_raw = conn.execute("""
-            SELECT m.title, COUNT(b.id) as bookings
-            FROM movies m
-            LEFT JOIN showtimes st ON st.movie_id = m.id
-            LEFT JOIN bookings b ON b.showtime_id = st.id AND b.status='confirmed'
-            GROUP BY m.id
-            ORDER BY bookings DESC
-            LIMIT 6
-        """).fetchall()
-        movies = [{'label': r['title'], 'value': r['bookings']} for r in movies_raw]
+    zones_raw = qdb("""
+        SELECT c.name as zone_name, COUNT(b.id) as bookings
+        FROM cinemas c
+        LEFT JOIN halls h ON h.cinema_id=c.id
+        LEFT JOIN showtimes st ON st.hall_id=h.id
+        LEFT JOIN bookings b ON b.showtime_id=st.id AND b.status='confirmed'
+        GROUP BY c.id, c.name ORDER BY bookings DESC
+    """)
+    zones = [{'label': r['zone_name'], 'value': r['bookings']} for r in zones_raw]
+    return jsonify({'genres': genres, 'movies': movies_data, 'zones': zones})
 
-        # Bookings by cinema → data.zones
-        zones_raw = conn.execute("""
-            SELECT c.name as zone_name, COUNT(b.id) as bookings
-            FROM cinemas c
-            LEFT JOIN halls h ON h.cinema_id = c.id
-            LEFT JOIN showtimes st ON st.hall_id = h.id
-            LEFT JOIN bookings b ON b.showtime_id = st.id AND b.status='confirmed'
-            GROUP BY c.id
-            ORDER BY bookings DESC
-        """).fetchall()
-        zones = [{'label': r['zone_name'], 'value': r['bookings']} for r in zones_raw]
-
-        return jsonify({
-            'genres': genres,
-            'movies': movies,
-            'zones':  zones,
-        })
 
 with app.app_context():
     init_db()
 
 if __name__ == '__main__':
-    init_db()
     print("="*55)
     print("  ksync — Cinema Reservation System")
     print("  Abuja, Nigeria")
     print("  Admin: admin / admin123")
     print("  Demo:  demo  / demo123")
     print("="*55)
-
     port = int(os.environ.get('PORT', 5000))
     app.run(debug=False, host='0.0.0.0', port=port)
