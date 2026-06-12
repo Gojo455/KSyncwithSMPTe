@@ -1,4 +1,4 @@
 flask
 gunicorn
 requests
-libsql
+psycopg2-binary
