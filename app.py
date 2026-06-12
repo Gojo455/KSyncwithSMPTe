@@ -670,7 +670,7 @@ def seed(db):
 
     movie_ids = []
     for m in movies:
-        movie_data = (m[0], m[1], m[2], m[3], m[4], m[7], m[13], m[12], m[6])
+        movie_data = (m[0], m[1], m[2], m[3], m[4], m[7], m[13], m[12], int(str(m[6])[:4]))
         cur.execute(
             """INSERT INTO movies (title,genre,description,duration_min,rating,
                poster_url,director,cast_list,release_year)
