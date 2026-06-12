@@ -383,38 +383,46 @@ def learn_preferences(user_id, movie_id, seat_id, db=None):
     own_db = db is None
     if own_db:
         db = get_db()
-    
-    movie = db.execute("SELECT genre FROM movies WHERE id=%s", (movie_id,)).fetchone()
-    seat  = db.execute("SELECT * FROM seats WHERE id=%s", (seat_id,)).fetchone()
-    if not movie or not seat: return
-    
-    prefs = db.execute("SELECT * FROM user_preferences WHERE user_id=%s", (user_id,)).fetchone()
-    tags = json.loads(seat['position_tags']) if seat['position_tags'] else []
+
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cur.execute("SELECT genre FROM movies WHERE id=%s", (movie_id,))
+    movie = cur.fetchone()
+    cur.execute("SELECT * FROM seats WHERE id=%s", (seat_id,))
+    seat = cur.fetchone()
+    if not movie or not seat:
+        cur.close()
+        return
+
+    cur.execute("SELECT * FROM user_preferences WHERE user_id=%s", (user_id,))
+    prefs = cur.fetchone()
+
+    tags     = json.loads(seat['position_tags']) if seat['position_tags'] else []
     new_pos  = 'center' if 'center' in tags else ('aisle' if 'aisle' in tags else 'edge')
     new_zone = 'middle' if 'middle' in tags else ('front' if 'front' in tags else 'back')
 
     if prefs:
-        gw = json.loads(prefs['genre_weights'])
+        gw    = json.loads(prefs['genre_weights'])
         alpha = 0.3
         gw[movie['genre']] = round(alpha + (1 - alpha) * gw.get(movie['genre'], 0.0), 4)
-        beta = 0.25
+        beta      = 0.25
         new_avg_q = (1 - beta) * float(prefs['avg_quality_pref']) + beta * float(seat['quality_score'])
-        db.execute(
+        cur.execute(
             """UPDATE user_preferences SET genre_weights=%s, seat_position_pref=%s,
                seat_zone_pref=%s, avg_quality_pref=%s, booking_count=booking_count+1
                WHERE user_id=%s""",
             (json.dumps(gw), new_pos, new_zone, round(new_avg_q, 2), user_id))
     else:
         gw = {movie['genre']: 0.5}
-        db.execute(
+        cur.execute(
             """INSERT INTO user_preferences
                (user_id, genre_weights, seat_position_pref, seat_zone_pref, avg_quality_pref, booking_count)
                VALUES (%s,%s,%s,%s,%s,%s)""",
             (user_id, json.dumps(gw), new_pos, new_zone, float(seat['quality_score']), 1))
-    
+
+    cur.close()
     if own_db:
         db.commit()
-
 #  Auth Helpers
 
 def hash_pw(pw):
