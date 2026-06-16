@@ -5,6 +5,8 @@ import os
 import math
 from app import recommend, get_prefs, DATABASE_URL
 
+import os
+os.environ['DATABASE_URL'] = "postgresql://ksync_db_user:VGfhw3q4rjYDJf0FR79Zeg9PdvpyxWVK@dpg-d8m73kb7uimc73d35kjg-a.oregon-postgres.render.com/ksync_db"
 def get_all_confirmed_bookings():
     """Pull every confirmed booking with user and movie info."""
     db  = psycopg2.connect(DATABASE_URL,
@@ -136,3 +138,11 @@ if __name__ == '__main__':
     from app import app
     with app.app_context():
         run_evaluation()
+
+
+
+
+
+"""
+$env:DATABASE_URL = "postgresql://ksync_db_user:VGfhw3q4rjYDJf0FR79Zeg9PdvpyxWVK@dpg-d8m73kb7uimc73d35kjg-a.oregon-postgres.render.com/ksync_db"
+"""
