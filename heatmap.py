@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import seaborn as sns
 import os
+import argparse
+import tkinter as tk
+from tkinter import ttk, messagebox
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
@@ -98,7 +101,143 @@ def generate_heatmap(showtime_id=1, hall_label="FilmHouse Silver"):
     print(f"  Col with best avg     : {np.argmax(grid.mean(axis=0)) + 1}")
 
 
+def list_showtimes_for_cinema(cinema_name):
+    """Return showtimes matching `cinema_name` (partial, case-insensitive)."""
+    db  = psycopg2.connect(DATABASE_URL,
+              cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = db.cursor()
+    cur.execute("""
+        SELECT id, cinema_name, hall_name, showtime
+        FROM showtimes
+        WHERE cinema_name ILIKE %s
+        ORDER BY showtime
+    """, (f"%{cinema_name}%",))
+    rows = cur.fetchall()
+    cur.close(); db.close()
+    return [dict(r) for r in rows]
+
+
+def _print_showtimes(rows):
+    if not rows:
+        print('No showtimes found for that cinema.')
+        return
+    print(f"Found {len(rows)} showtime(s):")
+    for r in rows:
+        print(f"  id={r['id']:>4}  |  {r['showtime']}  |  {r['cinema_name']} — {r['hall_name']}")
+
+
+def gui_select_hall_and_showtime():
+    """Open a simple Tkinter dialog to pick a cinema/hall and showtime, then generate the heatmap."""
+    try:
+        root = tk.Tk()
+    except Exception as e:
+        print('Unable to start GUI:', e)
+        return
+
+    root.title('Select Hall / Showtime')
+
+    # Fetch distinct cinema+hall combos
+    db  = psycopg2.connect(DATABASE_URL,
+              cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = db.cursor()
+    cur.execute("""
+        SELECT DISTINCT cinema_name, hall_name
+        FROM showtimes
+        ORDER BY cinema_name, hall_name
+    """)
+    combos = cur.fetchall()
+    cur.close(); db.close()
+
+    options = [f"{r['cinema_name']} — {r['hall_name']}" for r in combos]
+
+    frame = ttk.Frame(root, padding=12)
+    frame.grid(row=0, column=0, sticky='nsew')
+
+    ttk.Label(frame, text='Choose cinema + hall:').grid(row=0, column=0, sticky='w')
+    combo_var = tk.StringVar()
+    combo = ttk.Combobox(frame, textvariable=combo_var, values=options, width=60)
+    combo.grid(row=1, column=0, pady=6)
+    if options:
+        combo.current(0)
+
+    showtimes_listbox = tk.Listbox(frame, width=80, height=10)
+    showtimes_listbox.grid(row=3, column=0, pady=8)
+
+    def load_showtimes():
+        sel = combo_var.get()
+        if not sel:
+            messagebox.showinfo('Select', 'Please choose a cinema + hall from the dropdown.')
+            return
+        cinema, hall = [s.strip() for s in sel.split('—')]
+        cinema = cinema.strip(); hall = hall.strip()
+
+        db2  = psycopg2.connect(DATABASE_URL,
+                  cursor_factory=psycopg2.extras.RealDictCursor)
+        cur2 = db2.cursor()
+        cur2.execute("""
+            SELECT id, showtime FROM showtimes
+            WHERE cinema_name = %s AND hall_name = %s
+            ORDER BY showtime
+        """, (cinema, hall))
+        rows = cur2.fetchall()
+        cur2.close(); db2.close()
+
+        showtimes_listbox.delete(0, tk.END)
+        for r in rows:
+            showtimes_listbox.insert(tk.END, f"{r['id']:>4}  |  {r['showtime']}")
+        if not rows:
+            showtimes_listbox.insert(tk.END, 'No showtimes found for this hall.')
+
+    def generate_from_selection(event=None):
+        sel_combo = combo_var.get()
+        if not sel_combo:
+            messagebox.showinfo('Select', 'Please choose a cinema + hall first.')
+            return
+        sel_index = showtimes_listbox.curselection()
+        if not sel_index:
+            messagebox.showinfo('Select', 'Please select a showtime from the list.')
+            return
+        entry = showtimes_listbox.get(sel_index[0])
+        # entry format: '  id  |  showtime'
+        try:
+            sid = int(entry.split('|')[0].strip())
+        except Exception:
+            messagebox.showerror('Error', 'Invalid showtime selection.')
+            return
+        # Build a friendly label
+        cinema, hall = [s.strip() for s in sel_combo.split('—')]
+        label = f"{cinema} — {hall}"
+        root.destroy()
+        generate_heatmap(showtime_id=sid, hall_label=label)
+
+    btn_frame = ttk.Frame(frame)
+    btn_frame.grid(row=2, column=0, pady=6, sticky='w')
+    ttk.Button(btn_frame, text='Load Showtimes', command=load_showtimes).grid(row=0, column=0, padx=4)
+    ttk.Button(btn_frame, text='Generate Heatmap', command=generate_from_selection).grid(row=0, column=1, padx=4)
+
+    showtimes_listbox.bind('<Double-Button-1>', generate_from_selection)
+
+    root.mainloop()
+
+
 if __name__ == '__main__':
-    # showtime_id=1 is always the first seeded showtime
-    # Change it to any showtime_id in your database
-    generate_heatmap(showtime_id=1, hall_label="FilmHouse Silver (8×12)")
+    parser = argparse.ArgumentParser(description='Generate seat-quality heatmap or list showtimes for a cinema')
+    parser.add_argument('--list', '-l', dest='list_cinema', help='List showtimes for a cinema name (partial match)')
+    parser.add_argument('--showtime', '-s', dest='showtime_id', type=int, help='Showtime ID to generate heatmap for')
+    parser.add_argument('--label', '-t', dest='hall_label', default=None, help='Optional hall label to use in plot title')
+
+    args = parser.parse_args()
+
+    if args.list_cinema:
+        rows = list_showtimes_for_cinema(args.list_cinema)
+        _print_showtimes(rows)
+    elif args.showtime_id:
+        label = args.hall_label if args.hall_label is not None else f"Showtime {args.showtime_id}"
+        generate_heatmap(showtime_id=args.showtime_id, hall_label=label)
+    else:
+        # No CLI args -> open GUI by default (Option B)
+        try:
+            gui_select_hall_and_showtime()
+        except Exception as e:
+            print('GUI failed to start, falling back to default showtime heatmap:', e)
+            generate_heatmap(showtime_id=1, hall_label="FilmHouse Silver (8×12)")
