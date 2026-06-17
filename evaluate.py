@@ -1,55 +1,32 @@
-# ─────────────────────────────────────────────────────────
-# evaluate.py  —  Offline Evaluation for KSync Recommender
-# Run from your project folder:
-#   python evaluate.py
-# ─────────────────────────────────────────────────────────
+import psycopg2
+import psycopg2.extras
+import os
 
-import csv
-import math
-import random
-from collections import defaultdict
+DATABASE_URL = "postgresql://ksync_db_user:VGfhw3q4rjYDJf0FR79Zeg9PdvpyxWVK@dpg-d8m73kb7uimc73d35kjg-a.oregon-postgres.render.com/ksync_db"
 
-
-# ════════════════════════════════════════════════════════
-# STEP 1 — LOAD DATA FROM CSV FILES
-# These are the files you exported from your Render database
-# ════════════════════════════════════════════════════════
-
-def load_bookings(path='bookings.csv'):
-    """
-    Loads every confirmed booking.
-    Each row tells us: which user booked which movie.
-    """
-    bookings = []
-    with open(path, newline='', encoding='utf-8') as f:
-        for row in csv.DictReader(f):
-            bookings.append({
-                'user_id':  int(row['user_id']),
-                'movie_id': int(row['movie_id']),
-                'title':    row['title'],
-                'genre':    row['genre'],
-                'rating':   float(row['rating']),
-            })
-    return bookings
+def load_bookings():
+    db  = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = db.cursor()
+    cur.execute("""
+        SELECT b.user_id, m.id as movie_id, m.title, m.genre, m.rating
+        FROM bookings b
+        JOIN showtimes s ON b.showtime_id = s.id
+        JOIN movies m    ON s.movie_id    = m.id
+        WHERE b.status = 'confirmed'
+        ORDER BY b.user_id, b.created_at
+    """)
+    rows = cur.fetchall()
+    cur.close(); db.close()
+    return [dict(r) for r in rows]
 
 
-def load_movies(path='movies.csv'):
-    """
-    Loads all movies in the system.
-    The recommender picks from this pool.
-    """
-    movies = []
-    with open(path, newline='', encoding='utf-8') as f:
-        for row in csv.DictReader(f):
-            movies.append({
-                'id':     int(row['id']),
-                'title':  row['title'],
-                'genre':  row['genre'],
-                'rating': float(row['rating']),
-            })
-    return movies
-
-
+def load_movies():
+    db  = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = db.cursor()
+    cur.execute("SELECT id, title, genre, rating FROM movies WHERE is_active=1")
+    rows = cur.fetchall()
+    cur.close(); db.close()
+    return [dict(r) for r in rows]
 # ════════════════════════════════════════════════════════
 # STEP 2 — SPLIT INTO TRAINING SET AND TEST SET
 #
@@ -390,7 +367,7 @@ def run_popularity_baseline(test_by_user):
         ndcg_scores.append(ndcg_at_k(popular_ids,    relevant, k=5))
 
     print(f"Popularity baseline → P@5: {sum(p5_scores)/len(p5_scores):.4f}  "
-          f"NDCG@5: {sum(ndcg_scores)/len(ndcg_scores):.4f}")0
+          f"NDCG@5: {sum(ndcg_scores)/len(ndcg_scores):.4f}")
 
 if __name__ == '__main__':
     run()

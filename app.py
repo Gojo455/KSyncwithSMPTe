@@ -65,7 +65,7 @@ def xdb(sql, args=()):
 
 
 def compute_seat_quality(row, col, total_rows, total_cols):
-    
+
     rn = row / total_rows   # normalised: 0.0 = front row, 1.0 = back row
     cn = col / total_cols   # normalised: 0.0 = far left,  1.0 = far right
 
@@ -77,15 +77,16 @@ def compute_seat_quality(row, col, total_rows, total_cols):
         # Back half: linear decay from optimum to back wall
         rs = (1.0 - rn) / (1.0 - opt_r)
 
-    if rn < 0.20:
-        rs *= 0.40   # severe penalty — viewer must tilt neck beyond 35 degrees
+    severe_front_penalty = rn < 0.20   # neck tilt beyond 35 degrees
+    if severe_front_penalty:
+        rs *= 0.40
 
-    
-    if rn > 0.85:
-        rs *= 0.70   # moderate penalty — screen subtends too small an angle
+    moderate_back_penalty = rn > 0.85   # screen subtends too small an angle
+    if moderate_back_penalty:
+        rs *= 0.70
 
     opt_c = 0.50
-    cd = abs(cn - opt_c)   
+    cd = abs(cn - opt_c)
 
     # Linear decay: 1.0 at centre, 0.0 at the absolute edge (cd = 0.5)
     cs = 1.0 - (cd / 0.50)
@@ -94,8 +95,18 @@ def compute_seat_quality(row, col, total_rows, total_cols):
     if cd > 0.30:
         cs *= 0.60
 
-  
     q = (rs * 0.60 + cs * 0.40) * 10.0
+
+    # ── Hard ceiling for severe ergonomic violations ──────────────────────
+    # A 35-degree-plus neck tilt is a fixed physical discomfort that a good
+    # horizontal position cannot offset. Without this cap, a centred seat
+    # in a severely-penalised front row (e.g. row A, centre column) could
+    # average back above 4.0 even though no real viewer would rate it that
+    # well. SMPTE EG 18-1994 treats this as a disqualifying condition, not
+    # a partial deduction, so we cap the final score rather than blend it.
+    if severe_front_penalty:
+        q = min(q, 3.0)
+
     return round(min(max(q, 0.5), 10.0), 2)
 
 
