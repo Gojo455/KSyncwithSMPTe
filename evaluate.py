@@ -354,7 +354,7 @@ def run_popularity_baseline(test_by_user):
         SELECT m.id FROM movies m
         LEFT JOIN showtimes s  ON s.movie_id  = m.id
         LEFT JOIN bookings  b  ON b.showtime_id = s.id
-                               AND b.status = 'confirmed'
+                               AND b.status = 'co.nfirmed'
         WHERE m.is_active = 1
         GROUP BY m.id ORDER BY COUNT(b.id) DESC
     """)
