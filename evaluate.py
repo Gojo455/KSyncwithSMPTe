@@ -160,7 +160,7 @@ def run_popularity_baseline(test_by_user):
         SELECT m.id FROM movies m
         LEFT JOIN showtimes s  ON s.movie_id  = m.id
         LEFT JOIN bookings  b  ON b.showtime_id = s.id
-                               AND b.status = 'confirmed'
+                               AND b.status = 'co.nfirmed'
         WHERE m.is_active = 1
         GROUP BY m.id ORDER BY COUNT(b.id) DESC
     """)
@@ -173,7 +173,7 @@ def run_popularity_baseline(test_by_user):
         ndcg_scores.append(ndcg_at_k(popular_ids,    relevant, k=5))
 
     print(f"Popularity baseline → P@5: {sum(p5_scores)/len(p5_scores):.4f}  "
-          f"NDCG@5: {sum(ndcg_scores)/len(ndcg_scores):.4f}")0
+          f"NDCG@5: {sum(ndcg_scores)/len(ndcg_scores):.4f}")
 
 if __name__ == '__main__':
     # Push an app context so recommend() can use Flask's g
