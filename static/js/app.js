@@ -1,10 +1,3 @@
-/* ═══════════════════════════════════════════════════════════════════════════
-   ksync — Frontend App JS
-   Real Paystack inline popup · Seat-aware recommendations · Live seat map
-   Genre Matcher (rule-based) · Session-persistent auth
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-// ─── STATE ─────────────────────────────────────────────────────────────────
 const S = {
   user: null,
   movies: [],
@@ -17,7 +10,7 @@ const S = {
   matcherMovies: [],
 };
 
-// ─── BOOT ──────────────────────────────────────────────────────────────────
+//  BOOT 
 document.addEventListener('DOMContentLoaded', async () => {
   applyTheme(localStorage.getItem('theme') || 'light');
   await checkAuth();   // Restores session if cookie still valid
@@ -27,7 +20,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAllModals(); });
 });
 
-// ─── AUTH ──────────────────────────────────────────────────────────────────
+//  AUTH 
 async function checkAuth() {
   const r = await api('/api/me');
   if (r.logged_in) setUser(r);
@@ -85,7 +78,7 @@ async function logout() {
   toast('Signed out successfully', 'info');
 }
 
-// ─── NAV / SECTIONS ────────────────────────────────────────────────────────
+//  NAV / SECTIONS 
 function showSection(name) {
   document.querySelector('.main').scrollIntoView({ behavior: 'smooth' });
   document.querySelectorAll('.section').forEach(s => s.classList.add('hidden'));
@@ -103,7 +96,7 @@ function showSection(name) {
   }
 }
 
-// ─── MOVIES ────────────────────────────────────────────────────────────────
+//  MOVIES 
 async function loadMovies() {
   const movies = await api('/api/movies');
   S.movies = Array.isArray(movies) ? movies : [];
@@ -168,7 +161,7 @@ function renderGrid(movies, containerId, isRec) {
   }).join('');
 }
 
-// ─── RECOMMENDATIONS ───────────────────────────────────────────────────────
+//  RECOMMENDATIONS 
 async function loadRecs() {
   ge('recs-grid').innerHTML = '<div class="shimmer" style="height:300px"></div>';
   const [recs, prefs] = await Promise.all([api('/api/recommendations'), api('/api/my-preferences')]);
@@ -193,7 +186,7 @@ async function loadRecs() {
   renderGrid(recs, 'recs-grid', true);
 }
 
-// ─── MOVIE DETAIL ──────────────────────────────────────────────────────────
+//  MOVIE DETAIL 
 async function openMovieDetail(mid) {
   openModal('movie-modal');
   ge('movie-detail').innerHTML = '<div class="shimmer" style="height:320px"></div>';
@@ -247,7 +240,7 @@ async function openMovieDetail(mid) {
     </div>`;
 }
 
-// ─── SEAT MAP ──────────────────────────────────────────────────────────────
+//  SEAT MAP 
 async function openSeatMap(showtimeId) {
   closeModal('movie-modal');
   openModal('seat-modal');
@@ -429,9 +422,6 @@ function autoSuggestSeats(seats) {
   }).join('');
 
 
-
-  
-
   bar.innerHTML = `
     <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.4rem">
       <span style="font-size:1.1rem">✦</span>
@@ -531,7 +521,7 @@ function startLockTimer() {
   }, 1000);
 }
 
-// ─── PAYMENT ───────────────────────────────────────────────────────────────
+//  PAYMENT 
 async function goToPayment() {
   if (!S.selectedSeat || !S.showtimeId) {
     toast('No seat selected. Please pick a seat first.', 'error');
@@ -639,7 +629,7 @@ function showConfirmation(b) {
   toast('Booking confirmed! Enjoy the show 🎬', 'success');
 }
 
-// ─── MY TICKETS (Showtime History) ─────────────────────────────────────────
+//  MY TICKETS (Showtime History) 
 async function loadTickets() {
   const list = ge('tickets-list');
   list.innerHTML = '<div class="shimmer" style="height:120px;margin-bottom:1rem;border-radius:14px"></div><div class="shimmer" style="height:120px;border-radius:14px"></div>';
@@ -734,7 +724,7 @@ async function loadTickets() {
   list.innerHTML = html;
 }
 
-// ─── GENRE MATCHER ─────────────────────────────────────────────────────────
+//  GENRE MATCHER 
 async function initGenreMatcher() {
   // Load all genres for checkboxes
   const genres = await api('/api/genres');
@@ -793,7 +783,7 @@ function renderMatcherForm(genres) {
 }
 
 function updateMatcherBtn() {
-  // Always enabled — just a visual feedback hook if needed later
+  // Always enabled  just a visual feedback hook if needed later
 }
 
 async function runGenreMatcher() {
@@ -872,7 +862,7 @@ function renderMatcherResults(results, filters) {
     </div>`;
 }
 
-// ─── CINEMAS ───────────────────────────────────────────────────────────────
+//  CINEMAS 
 async function loadCinemas() {
   const cinemas = await api('/api/cinemas');
   if (!Array.isArray(cinemas)) return;
@@ -886,7 +876,7 @@ async function loadCinemas() {
     </div>`).join('');
 }
 
-// ─── THEME ─────────────────────────────────────────────────────────────────
+//  THEME 
 function toggleTheme() {
   const current = document.documentElement.getAttribute('data-theme');
   applyTheme(current === 'dark' ? 'light' : 'dark');
@@ -898,7 +888,7 @@ function applyTheme(t) {
   if (btn) btn.textContent = t === 'dark' ? '○' : '◑';
 }
 
-// ─── MODAL UTILS ───────────────────────────────────────────────────────────
+//  MODAL UTILS 
 function openModal(id) {
   const m = ge(id); if (m) m.classList.remove('hidden');
 }
@@ -920,7 +910,7 @@ function closeSeatModal() {
   closeModal('seat-modal');
 }
 
-// ─── TOAST ─────────────────────────────────────────────────────────────────
+//  TOAST 
 function toast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
@@ -933,7 +923,7 @@ function toast(msg, type = 'info') {
   }, 3800);
 }
 
-// ─── FORMAT UTILS ──────────────────────────────────────────────────────────
+//  FORMAT UTILS 
 function fmtTime(dt) {
   const d = new Date(dt.includes('T') ? dt : dt.replace(' ', 'T'));
   return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
@@ -950,14 +940,14 @@ function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ─── DOM SHORTCUTS ─────────────────────────────────────────────────────────
+//  DOM SHORTCUTS 
 function ge(id)  { return document.getElementById(id); }
 function val(id) { return (ge(id)||{}).value?.trim() || ''; }
 function hide(id){ const el = typeof id==='string'?ge(id):id; if(el) el.style.display='none'; }
 function show(id){ const el = typeof id==='string'?ge(id):id; if(el) el.style.display=''; }
 function showErr(el, msg) { el.textContent=msg; el.classList.remove('hidden'); }
 
-// ─── API ───────────────────────────────────────────────────────────────────
+//  API 
 async function api(url, opts={}) {
   const { method='GET', body } = opts;
   try {

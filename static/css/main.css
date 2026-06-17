@@ -1,10 +1,4 @@
-/* ═══════════════════════════════════════════════════════════════════════════
-   ksync — Main Styles
-   Palette: Warm cream · Dusty rose · Sage · Champagne gold
-   Fonts: Cormorant Garamond (display) + DM Sans (body)
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-/* ─── VARIABLES ──────────────────────────────────────────────────────────── */
+/*  VARIABLES  */
 :root {
   /* Light theme (default) */
   --bg:        #fdf9f5;
@@ -79,7 +73,7 @@
   --light-green: #3a4a3a;
 }
 
-/* ─── RESET ──────────────────────────────────────────────────────────────── */
+/*  RESET  */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
 body{
@@ -112,7 +106,7 @@ textarea{resize:vertical}
 label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-bottom:0.9rem}
 .hidden{display:none!important}
 
-/* ─── BUTTONS ────────────────────────────────────────────────────────────── */
+/*  BUTTONS  */
 .btn-rose{
   background:var(--rose);color:#fff;
   font-weight:600;font-family:var(--font-body);
@@ -137,7 +131,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .btn-sage{background:var(--sage);color:#fff;border-radius:var(--radius-pill);padding:0.6rem 1.25rem;font-size:0.88rem}
 .btn-sage:hover{opacity:0.88;transform:translateY(-1px)}
 
-/* ─── NAV ────────────────────────────────────────────────────────────────── */
+/*  NAV  */
 .nav{
   position:fixed;top:0;left:0;right:0;z-index:200;
   height:62px;
@@ -176,7 +170,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 }
 .mt{margin-top:0.5rem}
 
-/* ─── HERO ────────────────────────────────────────────────────────────────── */
+/*  HERO  */
 .hero{
   position:relative;min-height:100vh;
   display:flex;align-items:center;
@@ -243,7 +237,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 
 @keyframes fadeUp{from{opacity:0;transform:translateY(28px)}to{opacity:1;transform:none}}
 
-/* ─── MAIN ────────────────────────────────────────────────────────────────── */
+/*  MAIN  */
 .main{max-width:1380px;margin:0 auto;padding:2rem 2rem 6rem}
 .section{animation:fadeUp 0.45s ease both}
 .section-top{
@@ -257,7 +251,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .filter-input{min-width:200px}
 .filter-select{min-width:140px}
 
-/* ─── PREF CARD ──────────────────────────────────────────────────────────── */
+/*  PREF CARD  */
 .pref-card{
   background:var(--surface);border:1px solid var(--border2);
   border-radius:var(--radius);padding:0.75rem 1.25rem;
@@ -271,7 +265,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .dot.gold{background:var(--gold)}
 .dot.sage{background:var(--sage)}
 
-/* ─── MOVIE GRID ─────────────────────────────────────────────────────────── */
+/*  MOVIE GRID  */
 .movies-grid{
   display:grid;
   grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
@@ -327,7 +321,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .mp-gold{background:var(--gold-dim);color:var(--gold)}
 .mp-sage{background:var(--sage-dim);color:var(--sage)}
 
-/* ─── EMPTY ───────────────────────────────────────────────────────────────── */
+/*  EMPTY  */
 .empty-state{
   grid-column:1/-1;text-align:center;
   padding:4rem 2rem;color:var(--text2);
@@ -335,7 +329,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .empty-state .ei{font-size:3rem;margin-bottom:1rem}
 .empty-state h3{font-family:var(--font-display);font-size:1.3rem;color:var(--text);margin-bottom:0.4rem}
 
-/* ─── SHIMMER ────────────────────────────────────────────────────────────── */
+/*  SHIMMER  */
 .shimmer{
   height:240px;grid-column:1/-1;
   background:linear-gradient(90deg,var(--surface) 25%,var(--surface2) 50%,var(--surface) 75%);
@@ -345,7 +339,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 }
 @keyframes shimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
 
-/* ─── MOVIE DETAIL ────────────────────────────────────────────────────────── */
+/*  MOVIE DETAIL  */
 .detail-grid{display:grid;grid-template-columns:260px 1fr;gap:2rem}
 @media(max-width:620px){.detail-grid{grid-template-columns:1fr}}
 .detail-poster{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:var(--radius);background:var(--bg3)}
@@ -375,7 +369,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .st-btn .sprice{color:var(--gold);font-weight:600}
 .st-full{opacity:0.38;cursor:default}.st-full:hover{border-color:var(--border2);background:var(--surface2)}
 
-/* ─── SEAT MAP ───────────────────────────────────────────────────────────── */
+/*  SEAT MAP  */
 .seat-map-wrap{padding:0.25rem 0}
 .seat-map-head h2{font-size:1.45rem;font-weight:700;margin-bottom:0.25rem}
 .seat-map-head p{color:var(--text2);font-size:0.85rem;margin-bottom:1.25rem}
@@ -497,7 +491,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 }
 .seat-tooltip.show{opacity:1}
 
-/* ─── PAYMENT ────────────────────────────────────────────────────────────── */
+/*  PAYMENT  */
 .pay-title{font-size:1.55rem;font-weight:700;margin-bottom:0.3rem}
 .pay-sub{color:var(--text2);font-size:0.88rem;margin-bottom:1.4rem}
 .pay-row{display:flex;justify-content:space-between;padding:0.55rem 0;border-bottom:1px solid var(--border);font-size:0.88rem}
@@ -511,7 +505,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
   padding:0.65rem 1rem;font-size:0.78rem;text-align:center;margin-top:0.75rem;
 }
 
-/* ─── CONFIRMATION ───────────────────────────────────────────────────────── */
+/*  CONFIRMATION  */
 .confirm-wrap{text-align:center;padding:0.75rem}
 .confirm-icon{font-size:3.5rem;margin-bottom:0.85rem;animation:pop 0.4s cubic-bezier(0.34,1.56,0.64,1) both}
 @keyframes pop{from{transform:scale(0)}to{transform:scale(1)}}
@@ -525,7 +519,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .cd-lbl{color:var(--text2)}
 .cd-val{font-weight:600}
 
-/* ─── TICKETS ────────────────────────────────────────────────────────────── */
+/*  TICKETS  */
 .tickets-list{display:flex;flex-direction:column;gap:0.9rem}
 .ticket{
   background:var(--surface);border:1px solid var(--border);
@@ -544,7 +538,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
   white-space:nowrap;
 }
 
-/* ─── CINEMAS ────────────────────────────────────────────────────────────── */
+/*  CINEMAS  */
 .cinemas-grid{
   display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1.25rem;
 }
@@ -557,7 +551,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .cinema-loc{color:var(--rose);font-size:0.82rem;font-weight:600;margin-bottom:0.5rem}
 .cinema-addr{color:var(--text2);font-size:0.82rem;line-height:1.6}
 
-/* ─── MODALS ─────────────────────────────────────────────────────────────── */
+/*  MODALS  */
 .overlay{
   position:fixed;inset:0;z-index:500;
   background:rgba(45,31,26,0.55);
@@ -589,7 +583,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 }
 .close-btn:hover{background:var(--rose-dim);color:var(--rose);border-color:var(--rose)}
 
-/* ─── MODAL BACKDROP (for payment & confirmation) ────────────────────────── */
+/*  MODAL BACKDROP (for payment & confirmation)  */
 .modal-backdrop{
   position:fixed;inset:0;z-index:500;
   background:rgba(45,31,26,0.55);
@@ -618,7 +612,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .modal-close:hover{background:var(--rose-dim);color:var(--rose);border-color:var(--rose)}
 .confirm-box{text-align:center}
 
-/* ─── FOOTER ─────────────────────────────────────────────────────────────── */
+/*  FOOTER  */
 .footer{
   background:linear-gradient(135deg, var(--rose-dim) 0%, var(--gold-dim) 100%);
   border-top:2px solid var(--border2);
@@ -662,14 +656,14 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .demo-info{text-align:center;font-size:0.75rem;color:var(--text3);margin-top:0.5rem}
 .demo-info code{background:var(--bg3);padding:0.1rem 0.35rem;border-radius:4px}
 
-/* ─── ERRORS ─────────────────────────────────────────────────────────────── */
+/*  ERRORS  */
 .form-err{
   background:rgba(201,80,80,0.08);border:1px solid rgba(201,80,80,0.25);
   color:var(--red);border-radius:var(--radius-sm);
   padding:0.6rem 1rem;font-size:0.82rem;margin-bottom:0.85rem;
 }
 
-/* ─── TOASTS ─────────────────────────────────────────────────────────────── */
+/*  TOASTS  */
 .toast-container{position:fixed;bottom:2rem;right:2rem;display:flex;flex-direction:column;gap:0.65rem;z-index:9999}
 .toast{
   background:var(--surface);border:1px solid var(--border2);
@@ -685,7 +679,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 @keyframes toastIn{from{transform:translateX(110%);opacity:0}to{transform:none;opacity:1}}
 @keyframes toastOut{to{transform:translateX(110%);opacity:0}}
 
-/* ─── RESPONSIVE ─────────────────────────────────────────────────────────── */
+/*  RESPONSIVE  */
 @media(max-width:768px){
   .hero{padding:6.5rem 1.5rem 3rem}
   .hero-art{display:none}
@@ -697,7 +691,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
   .nav-center{display:none}
 }
 
-/* ─── AI GENRE MATCHER ──────────────────────────────────────────────────── */
+/*  AI GENRE MATCHER  */
 .ai-matcher-wrap{display:flex;flex-direction:column;gap:1.5rem;max-width:860px;margin:0 auto;width:100%}
 .ai-input-card{
   background:var(--surface);border:1px solid var(--border2);
@@ -774,7 +768,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 @keyframes dotBounce{0%,80%,100%{transform:scale(0.7);opacity:.5}40%{transform:scale(1);opacity:1}}
 .ai-no-result{text-align:center;padding:1.5rem;color:var(--text2);font-size:0.9rem}
 
-/* ─── IMPROVED TICKET CARDS ──────────────────────────────────────────────── */
+/*  IMPROVED TICKET CARDS  */
 .ticket-section-header{
   display:flex;align-items:center;gap:0.75rem;
   font-family:var(--font-display);font-size:1.15rem;font-weight:700;
@@ -825,7 +819,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
   .ai-match-card{flex-wrap:wrap}
 }
 
-/* ─── GENRE MATCHER ──────────────────────────────────────────────────────── */
+/*  GENRE MATCHER  */
 .genre-matcher-wrap{display:flex;flex-direction:column;gap:1.5rem;max-width:960px;margin:0 auto;width:100%}
 .matcher-form-card{
   background:var(--surface);border:1px solid var(--border2);
@@ -899,7 +893,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
   .matcher-card-poster,.matcher-card-poster-ph{width:60px;height:80px}
 }
 
-/* ── Two-score seat summary panel ──────────────────────────────────────── */
+/*  Two-score seat summary panel  */
 .ss-divider {
   font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.07em; color: var(--text3);
@@ -913,7 +907,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 .ss-badge-gold { background: var(--gold-dim); color: var(--gold); }
 .ss-badge-rose { background: var(--rose-dim); color: var(--rose); }
 
-/* ── Two-score tooltip ──────────────────────────────────────────────────── */
+/*  Two-score tooltip  */
 #seat-tooltip { line-height: 1.65; }
 
 @keyframes suggestFadeIn {

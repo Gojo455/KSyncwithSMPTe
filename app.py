@@ -15,14 +15,10 @@ app.secret_key = os.environ.get('cinema_SECRET', 'ksync-stable-secret-key-2026-d
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 
-# ── PostgreSQL connection ─────────────────────────────────────────────────────
-# On Render: add a free PostgreSQL database, then copy its Internal Database URL
-# into an env var called DATABASE_URL.
-# Locally: set DATABASE_URL=postgresql://user:password@localhost:5432/ksync
+# Postgree connection
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is not set.")
-# ─────────────────────────────────────────────────────────────────────────────
 
 SEAT_LOCKS    = {}
 LOCK_DURATION = 300
@@ -31,14 +27,13 @@ PAYSTACK_SECRET_KEY = os.environ.get('PAYSTACK_SECRET_KEY', 'sk_test_527e7adc01b
 PAYSTACK_PUBLIC_KEY = os.environ.get('PAYSTACK_PUBLIC_KEY', 'pk_test_b695c7bf0b597ddebfe2f70ff4aa73927dd1d1de')
 
 
-# ── DB Helpers ────────────────────────────────────────────────────────────────
+# DB Helpers 
 def get_db():
     """One psycopg2 connection per request, stored on Flask g."""
     if '_db' not in g:
         g._db = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
         g._db.autocommit = False
     return g._db
-
 
 @app.teardown_appcontext
 def close_db(e):
@@ -56,7 +51,6 @@ def qdb(sql, args=(), one=False):
     cur.close()
     return (rows[0] if rows else None) if one else rows
 
-
 def xdb(sql, args=()):
     """Write query. Commits and returns the inserted row id via RETURNING id."""
     db  = get_db()
@@ -69,45 +63,12 @@ def xdb(sql, args=()):
     cur.close()
     return row['id'] if row else None
 
-#  SCORE 1 — OBJECTIVE SEAT QUALITY  (Q_obj)
-#
-#  Based on:
-#   • SMPTE EG 18-1994  — optimal viewing distance 1.5–2× screen width
-#   • THX reference-seat spec — ~55–65 % back, horizontally centred
-#   • ITU-R BT.2022     — horizontal viewing angle must stay ≤ 30°
-#   • Dolby Atmos design guide — surround sweet-spot = central middle rows
-#   • Visual ergonomics  — neck tilt > 35° causes fatigue (front-row penalty)
-#
-#  This score belongs to the SEAT, not the user.
-#  It is calculated ONCE at showtime creation and stored in seats.quality_score.
-#  It is identical for every user who looks at the same seat.
 
-#  SCORE 1 — OBJECTIVE SEAT QUALITY  (Q_obj)
-#
-#  Derived from SMPTE EG-18-1994 (Society of Motion Picture and
-#  Television Engineers) viewing angle specifications:
-#
-#   • Optimal horizontal viewing angle: 40–50 degrees
-#     → seats in the zone 40–65% back from the screen score highest
-#   • Minimum horizontal angle (farthest seat): 30 degrees
-#     → seats beyond 85% back fall below this threshold and are penalised
-#   • Vertical discomfort threshold: 35 degrees
-#     → seats in the front 20% of rows exceed this and are penalised
-#   • Horizontal centre constraint: ITU-R BT.2022 ≤ 30° lateral angle
-#     → seats in the outer 20% of columns on either side are penalised
-#
-#  This score belongs to the SEAT, not the user.
-#  It is calculated ONCE at showtime creation and stored in seats.quality_score.
-#  It is identical for every user who looks at the same seat.
-# ═══════════════════════════════════════════════════════════════════
 def compute_seat_quality(row, col, total_rows, total_cols):
     
     rn = row / total_rows   # normalised: 0.0 = front row, 1.0 = back row
     cn = col / total_cols   # normalised: 0.0 = far left,  1.0 = far right
 
-    # ── ROW SCORE ──────────────────────────────────────────────────
-    # SMPTE optimal zone: 40–65% back. Midpoint = 0.525
-    # Score = 1.0 at optimum, decays toward 0.0 at the boundaries (0.0 and 1.0)
     opt_r = 0.525
     if rn <= opt_r:
         # Front half: linear decay from optimum to front wall
@@ -116,20 +77,15 @@ def compute_seat_quality(row, col, total_rows, total_cols):
         # Back half: linear decay from optimum to back wall
         rs = (1.0 - rn) / (1.0 - opt_r)
 
-    # SMPTE EG-18-1994: vertical angle > 35 degrees causes physical discomfort
-    # This threshold maps to approximately the front 20% of rows
     if rn < 0.20:
         rs *= 0.40   # severe penalty — viewer must tilt neck beyond 35 degrees
 
-    # SMPTE minimum 30-degree horizontal angle violated beyond 85% back
+    
     if rn > 0.85:
         rs *= 0.70   # moderate penalty — screen subtends too small an angle
 
-    # ── COLUMN SCORE ───────────────────────────────────────────────
-    # ITU-R BT.2022 / SMPTE: lateral angle must stay ≤ 30 degrees from centre
-    # Dead centre (0.5) = perfect. Outer 20% each side exceeds acceptable angle.
     opt_c = 0.50
-    cd = abs(cn - opt_c)   # distance from centre: 0.0 (centre) to 0.5 (edge)
+    cd = abs(cn - opt_c)   
 
     # Linear decay: 1.0 at centre, 0.0 at the absolute edge (cd = 0.5)
     cs = 1.0 - (cd / 0.50)
@@ -138,21 +94,12 @@ def compute_seat_quality(row, col, total_rows, total_cols):
     if cd > 0.30:
         cs *= 0.60
 
-    #  COMBINE AND SCALE
-    # Row: 60% weight  |  Column: 40% weight  (SMPTE longitudinal emphasis)
+  
     q = (rs * 0.60 + cs * 0.40) * 10.0
     return round(min(max(q, 0.5), 10.0), 2)
 
 
 def classify_seat(row, col, total_rows, total_cols):
-    """
-    Assign two categorical position tags to a seat.
-    These tags are used by the preference-matching engine (Score 2)
-    to compare a seat's position against what the user prefers.
-
-    Lateral  : center | aisle | edge
-    Longitudinal: front | middle | back
-    """
     tags = []
     cr = col / total_cols
     rr = row / total_rows
@@ -165,29 +112,8 @@ def classify_seat(row, col, total_rows, total_cols):
     return tags
 
 
-
-#  SCORE 2 SUBJECTIVE PREFERENCE MATCH  (Q_pref)
-#
-#  This score belongs to the USER, not the seat.
-#  It is computed live during recommendations and seat selection.
-#  Two users looking at the same seat will receive DIFFERENT Q_pref scores.
-#
-#  It compares the seat's position tags and objective quality against
-#  three preference dimensions learned from the user's booking history:
-#    • seat_position_pref  — do they prefer center / aisle / edge%s
-#    • seat_zone_pref      — do they prefer front / middle / back%s
-#    • avg_quality_pref    — what objective quality level do they usually choose%s
-#
-#  Weights:  position match 40 %  |  zone match 30 %  |  quality proximity 30 %
-# ═══════════════════════════════════════════════════════════════════
 def seat_pref_match(available_seats, prefs):
-    """
-    Score how well the best available seat matches this user's learned preferences.
-    Returns (best_pref_score 0–1, obj_quality_of_that_seat 0–10).
-
-    Called during recommendation scoring; Q_pref is kept completely separate
-    from Q_obj so the two contributions to the final ranking are transparent.
-    """
+  
     if not available_seats:
         return 0.0, 0.0
 
@@ -232,12 +158,7 @@ def get_prefs(user_id):
 
 
 def split_genres(genre_string):
-    """
-    Split a compound genre string into individual tokens.
-    e.g. 'Action · Comedy · Superhero' → ['Action', 'Comedy', 'Superhero']
-    Used everywhere we need to compare genres so that Jaccard similarity
-    works on individual genre tokens, not useless compound strings.
-    """
+   
     return [g.strip() for g in genre_string.split('·') if g.strip()]
 
 
@@ -247,13 +168,7 @@ def jaccard(a, b):
 
 
 def collab_score(user_id, movie_id):
-    """
-    Jaccard-based collaborative filtering on genre booking history.
-    FIX: Now tokenises compound genre strings ('Action · Comedy') into
-    individual genres before computing similarity, so that partial genre
-    overlaps are detected correctly instead of requiring exact compound matches.
-    """
-    # Build this user's genre set from confirmed booking history
+    
     raw_user = qdb(
         """SELECT DISTINCT m.genre FROM bookings b JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id WHERE b.user_id=%s AND b.status='confirmed'""", (user_id,))
     user_genres = set(g for r in raw_user for g in split_genres(r['genre']))
@@ -262,8 +177,7 @@ def collab_score(user_id, movie_id):
     if not tgt: return 0.0
     tgt_genres = set(split_genres(tgt['genre']))
 
-    # Find peer users who have booked ANY movie sharing at least one genre token
-    # with the target movie. This is broader than the old exact-string match.
+    # Jaccard similarity
     all_other_users = qdb(
         """SELECT DISTINCT b.user_id FROM bookings b
            JOIN showtimes s ON b.showtime_id=s.id JOIN movies m ON s.movie_id=m.id
@@ -283,16 +197,8 @@ def collab_score(user_id, movie_id):
     return min(sum(sims)/len(sims)*1.5, 1.0) if sims else 0.0
 
 
-
-
 def recommend(user_id, limit=12):
-    """
-    Full hybrid recommendation combining:
-    1. Content-based (genre weights from booking history)
-    2. Collaborative (Jaccard similarity)
-    3. Context-aware: seat quality, seat preference match, showtime proximity, availability
-    4. Rating bonus
-    """
+  
     prefs = get_prefs(user_id)
     gw = json.loads(prefs.get('genre_weights', '{}'))
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -313,10 +219,6 @@ def recommend(user_id, limit=12):
         avail_ratio = len(avail) / total
         if avail_ratio == 0: continue
 
-        # 1. Content-based genre score
-        # FIX: tokenise the compound genre string and take the MAX weight
-        # across all individual genres the movie belongs to.
-        # e.g. 'Action · Comedy' checks both 'Action' and 'Comedy' weights.
         movie_genres = split_genres(st['genre'])
         genre_s = min(max((gw.get(g, 0.0) for g in movie_genres), default=0.0), 1.0)
 
@@ -344,9 +246,6 @@ def recommend(user_id, limit=12):
         # 4. Rating bonus
         rating_s = float(st['rating'] or 0) / 10.0
 
-        #  Weighted final score
-        # For new users with no history, genre_s and collab will be 0.
-        # Shift weight to rating + quality so results still rank meaningfully.
         has_history = bool(gw)
         if has_history:
             W = dict(genre=0.20, collab=0.15, pref=0.20, quality=0.15,
@@ -379,7 +278,6 @@ def recommend(user_id, limit=12):
 
 
 def learn_preferences(user_id, movie_id, seat_id, db=None):
-    """Implicit preference learning after each confirmed booking."""
     own_db = db is None
     if own_db:
         db = get_db()
@@ -437,7 +335,6 @@ def verify_pw(stored, given):
         return hashlib.pbkdf2_hmac('sha256', given.encode(), salt.encode(), 100000).hex() == h
     except: return False
 
-
 def auth_required(f):
     @wraps(f)
     def d(*a, **kw):
@@ -445,14 +342,12 @@ def auth_required(f):
         return f(*a, **kw)
     return d
 
-
 def admin_required(f):
     @wraps(f)
     def d(*a, **kw):
         if not session.get('is_admin'): return jsonify({'error':'Admins only'}), 403
         return f(*a, **kw)
     return d
-
 
 #  Database Init
 
@@ -747,7 +642,7 @@ def seed(db):
 
     # Admin + demo users
     for uname, email, pw, is_admin in [
-        ("admin", "admin@ksync.ng", "admin123", 1),
+        ("admin", "admin@ksync.ng", "Removeureyes", 1),
         ("demo",  "demo@ksync.ng",  "demo123",  0),
     ]:
         cur.execute(
@@ -803,7 +698,7 @@ def seed(db):
     cur.close()
 
 
-# ── Page Routes ───────────────────────────────────────────────────────────────
+
 @app.route('/')
 def index():
     return render_template('index.html', paystack_public_key=PAYSTACK_PUBLIC_KEY)
@@ -814,7 +709,7 @@ def admin():
     return render_template('admin.html')
 
 
-# ── Auth API ──────────────────────────────────────────────────────────────────
+#  Auth APIs
 @app.route('/api/register', methods=['POST'])
 def register():
     d = request.get_json()
@@ -872,7 +767,7 @@ def me():
                     'username':session['username'],'is_admin':session.get('is_admin',False)})
 
 
-# ── Movie API ─────────────────────────────────────────────────────────────────
+# Movie APIs
 @app.route('/api/movies')
 def get_movies():
     genre  = request.args.get('genre')
@@ -1002,7 +897,7 @@ def my_prefs():
     return jsonify(get_prefs(session['user_id']))
 
 
-# ── Seat API ──────────────────────────────────────────────────────────────────
+#  Seat API 
 @app.route('/api/seats/<int:sid>')
 def get_seats(sid):
     now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
@@ -1101,7 +996,7 @@ def unlock_seat():
     return jsonify({'success':True})
 
 
-# ── Booking API ───────────────────────────────────────────────────────────────
+#  Booking API 
 @app.route('/api/bookings/initiate', methods=['POST'])
 @auth_required
 def initiate_booking():
@@ -1172,7 +1067,7 @@ def my_bookings():
     return jsonify(result)
 
 
-# ── Admin API ─────────────────────────────────────────────────────────────────
+# Admin API 
 @app.route('/api/admin/stats')
 @admin_required
 def admin_stats():
