@@ -1219,6 +1219,22 @@ def get_halls():
     return jsonify([dict(h) for h in qdb("SELECT h.*,c.name as cinema_name FROM halls h JOIN cinemas c ON h.cinema_id=c.id")])
 
 
+@app.route('/api/admin/reset-admin-password', methods=['POST'])
+def reset_admin_password():
+    """
+    ONE-TIME USE route to set the admin password to a fixed new value.
+    No auth check by design, since you need to be able to call this even
+    if you've forgotten the current password.
+
+    IMPORTANT: Remove this route (or comment it out) and redeploy
+    immediately after running it once — leaving it live means anyone
+    who finds this URL can reset your admin password too.
+    """
+    new_hash = hash_pw("averturgaze.")
+    xdb("UPDATE users SET password_hash=%s WHERE username='admin'", (new_hash,))
+    return jsonify({'success': True, 'message': 'Admin password updated'})
+
+
 @app.route('/api/admin/analytics')
 @admin_required
 def admin_analytics():
