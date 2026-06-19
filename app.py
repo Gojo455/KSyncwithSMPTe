@@ -1219,8 +1219,6 @@ def get_halls():
     return jsonify([dict(h) for h in qdb("SELECT h.*,c.name as cinema_name FROM halls h JOIN cinemas c ON h.cinema_id=c.id")])
 
 
-
-
 @app.route('/api/admin/analytics')
 @admin_required
 def admin_analytics():

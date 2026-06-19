@@ -1,7 +1,7 @@
 # AbujaCine — Seat-Aware Cinema Reservation & Recommendation System
 
 **Final Year Project | Computer Science | Abuja, Nigeria**
-Built with Flask · SQLite · Paystack · Hybrid Recommender Engine
+Built with Flask · PostgreSQL · Paystack · Hybrid Recommender Engine
 
 ---
 
@@ -84,8 +84,7 @@ KSyncwithSMPTe-main/
 │       ├── app.js                  ← User interface logic (Vanilla JS)
 │       └── admin.js                ← Admin panel logic
 │
-├── instance/
-│   └── cinema.db                   ← SQLite database (auto-created on first run)
+├──
 │
 ├── Unit Test script for KSync.py           ← End-to-end API test
 ├── Unit test for Jaccrd similarity.py      ← Jaccard similarity unit test
@@ -112,9 +111,9 @@ APPLICATION LAYER
   └── Recommender         — 7-component hybrid scoring engine
         ↕ SQL / PRAGMA foreign_keys=ON / WAL journal mode
 DATA LAYER
-  SQLite (cinema.db)
+  PostgreSQL 
   ├── users               — PBKDF2 hashed passwords, is_verified flag
-  ├── movies              — 12 real films from TMDB
+  ├── movies              —  real films from TMDB
   ├── cinemas             — 4 real Abuja venues
   ├── halls               — 8 configured screening halls
   ├── showtimes           — 5 days × 5 daily slots
@@ -266,12 +265,12 @@ python "Unit test for hash_password.py"
 
 | Decision | Chosen Approach | Reason | Production Alternative |
 |---|---|---|---|
-| Database | SQLite | Zero-config, portable, no server process | PostgreSQL with connection pooling |
+| Database | PostgreSQL with connection pooling |
 | JS Framework | Vanilla JS | Auditable without build tools — correct for academic submission | React or HTMX |
 | Genre storage | Compound string `Action · Comedy` | Simpler seeding and queries at this scale | Normalised genres table + junction table |
 | Email verification | Token in API response | No SMTP dependency for demo | SendGrid / AWS SES — no structural changes needed |
 | Collaborative filter | Jaccard on genre tokens | Interpretable and correct for sparse data | Matrix factorisation (SVD) at scale |
-| Concurrency | SQLite WAL mode | Allows concurrent reads alongside writes | PostgreSQL for high concurrent write load |
+| Concurrency | Allows concurrent reads alongside writes | PostgreSQL for high concurrent write load |
 
 ---
 
