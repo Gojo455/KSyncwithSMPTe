@@ -1219,6 +1219,41 @@ def get_halls():
     return jsonify([dict(h) for h in qdb("SELECT h.*,c.name as cinema_name FROM halls h JOIN cinemas c ON h.cinema_id=c.id")])
 
 
+@app.route('/api/admin/recalculate-seat-quality', methods=['POST'])
+@admin_required
+def recalculate_seat_quality():
+    """
+    One-time maintenance route.
+    compute_seat_quality() only runs when a seat is FIRST created (during
+    seed() or when an admin creates a new showtime) — the result is stored
+    in seats.quality_score and never recalculated afterward. The seat map
+    always reads the stored value, it never recomputes it live.
+
+    Run this once after deploying a fix to compute_seat_quality() to
+    rewrite every existing seat's quality_score with the corrected formula.
+    """
+    db  = get_db()
+    cur = db.cursor()
+
+    halls = qdb("SELECT id, total_rows, total_cols FROM halls")
+    hall_dims = {h['id']: (h['total_rows'], h['total_cols']) for h in halls}
+
+    all_seats = qdb("SELECT id, hall_id, row_num, col_num FROM seats")
+
+    updated = 0
+    for s in all_seats:
+        tr, tc = hall_dims.get(s['hall_id'], (None, None))
+        if tr is None:
+            continue
+        new_q = compute_seat_quality(s['row_num'], s['col_num'], tr, tc)
+        cur.execute("UPDATE seats SET quality_score=%s WHERE id=%s", (new_q, s['id']))
+        updated += 1
+
+    db.commit()
+    cur.close()
+    return jsonify({'success': True, 'seats_updated': updated})
+
+
 @app.route('/api/admin/reset-admin-password', methods=['POST'])
 def reset_admin_password():
     """
