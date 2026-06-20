@@ -172,7 +172,7 @@ label{display:block;font-size:0.82rem;font-weight:500;color:var(--text2);margin-
 
 /*  HERO  */
 .hero{
-  position:relative;min-height:100vh;
+  position:relative;
   display:flex;align-items:center;
   padding:7rem 2rem 4rem;overflow:hidden;
 }

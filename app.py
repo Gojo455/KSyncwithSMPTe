@@ -257,13 +257,21 @@ def recommend(user_id, limit=12):
         # 4. Rating bonus
         rating_s = float(st['rating'] or 0) / 10.0
 
-        has_history = bool(gw)
-        if has_history:
-            W = dict(genre=0.20, collab=0.15, pref=0.20, quality=0.15,
-                     avail=0.10, time=0.10, rating=0.10)
-        else:
-            W = dict(genre=0.0, collab=0.0, pref=0.0, quality=0.35,
-                     avail=0.20, time=0.15, rating=0.30)
+        # Weights scale gradually with booking_count rather than jumping
+        # once from cold-start to fully personalised. A user's very first
+        # booking nudges the weights slightly toward personalisation;
+        # full personalised weighting is reached at 10 confirmed bookings.
+        # This means a 1-booking user and a 10+-booking user are no longer
+        # scored identically once both technically "have history".
+        booking_count = int(prefs.get('booking_count', 0))
+        ramp = min(booking_count / 10.0, 1.0)
+
+        cold = dict(genre=0.0,  collab=0.0,  pref=0.0,  quality=0.35,
+                    avail=0.20, time=0.15, rating=0.30)
+        warm = dict(genre=0.20, collab=0.15, pref=0.20, quality=0.15,
+                    avail=0.10, time=0.10, rating=0.10)
+        W = {k: cold[k] + (warm[k] - cold[k]) * ramp for k in cold}
+
         score = (W['genre']*genre_s + W['collab']*collab + W['pref']*pref_s
                  + W['quality']*quality_s + W['avail']*avail_s
                  + W['time']*time_s + W['rating']*rating_s)
@@ -272,41 +280,20 @@ def recommend(user_id, limit=12):
         if best_q < 3.0:         score *= 0.65
         if avail_ratio < 0.05:   score *= 0.55
 
-        # Key by showtime_id (not movie_id) so every qualifying showtime —
-        # across every date — is kept, instead of collapsing each movie
-        # down to only its single best-scoring showtime. This lets the
-        # frontend filter the ranked list by date without first requiring
-        # the user to open a movie to discover other available showtimes.
-        scored[sid] = {
-            'movie_id': mid, 'showtime_id': sid,
-            'title': st['title'], 'genre': st['genre'],
-            'rating': st['rating'], 'description': st['description'],
-            'poster_url': st['poster_url'], 'duration_min': st['duration_min'],
-            'director': st['director'], 'cast_list': st['cast_list'],
-            'showtime': st['showtime'], 'hall_name': st['hall_name'],
-            'cinema_name': st['cinema_name'], 'price': st['price'],
-            'score': round(score, 4), 'available_seats': len(avail),
-            'total_seats': total, 'best_quality': round(best_q, 1),
-            'pref_match': round(pref_s*100), 'avail_pct': round(avail_ratio*100),
-        }
-
-    ranked = sorted(scored.values(), key=lambda x: x['score'], reverse=True)
-
-    # Cap how many showtimes any single movie contributes so the list
-    # isn't dominated by one film with many dates, while still surfacing
-    # every distinct date for movies the user sees.
-    per_movie_count = {}
-    final = []
-    for item in ranked:
-        c = per_movie_count.get(item['movie_id'], 0)
-        if c >= 5:   # at most 5 dates/showtimes shown per movie
-            continue
-        per_movie_count[item['movie_id']] = c + 1
-        final.append(item)
-        if len(final) >= limit * 4:   # allow enough rows for date filtering
-            break
-
-    return final
+        if mid not in scored or scored[mid]['score'] < score:
+            scored[mid] = {
+                'movie_id': mid, 'showtime_id': sid,
+                'title': st['title'], 'genre': st['genre'],
+                'rating': st['rating'], 'description': st['description'],
+                'poster_url': st['poster_url'], 'duration_min': st['duration_min'],
+                'director': st['director'], 'cast_list': st['cast_list'],
+                'showtime': st['showtime'], 'hall_name': st['hall_name'],
+                'cinema_name': st['cinema_name'], 'price': st['price'],
+                'score': round(score, 4), 'available_seats': len(avail),
+                'total_seats': total, 'best_quality': round(best_q, 1),
+                'pref_match': round(pref_s*100), 'avail_pct': round(avail_ratio*100),
+            }
+    return sorted(scored.values(), key=lambda x: x['score'], reverse=True)[:limit]
 
 
 def learn_preferences(user_id, movie_id, seat_id, db=None):
@@ -674,7 +661,7 @@ def seed(db):
 
     # Admin + demo users
     for uname, email, pw, is_admin in [
-        ("admin", "admin@ksync.ng", "Averturgaze", 1),
+        ("admin", "admin@ksync.ng", "Removeureyes", 1),
         ("demo",  "demo@ksync.ng",  "demo123",  0),
     ]:
         cur.execute(
