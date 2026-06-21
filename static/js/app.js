@@ -14,20 +14,9 @@ const S = {
 document.addEventListener('DOMContentLoaded', async () => {
   applyTheme(localStorage.getItem('theme') || 'light');
   await checkAuth();   // Restores session if cookie still valid
+  loadMovies();
   loadGenres();
   loadCinemas();
-
-  // Logged-in users land directly on their personalised ranked list
-  // instead of the generic unranked "Now Showing" grid. Guests (no
-  // session) still see the standard browse grid, since they have no
-  // preference profile to rank by.
-  if (S.user) {
-    showSection('recommendations', true);
-  } else {
-    loadMovies();
-    showSection('browse', true);
-  }
-
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeAllModals(); });
 });
 
@@ -90,8 +79,8 @@ async function logout() {
 }
 
 //  NAV / SECTIONS 
-function showSection(name, skipScroll) {
-  if (!skipScroll) document.querySelector('.main').scrollIntoView({ behavior: 'smooth' });
+function showSection(name) {
+  document.querySelector('.main').scrollIntoView({ behavior: 'smooth' });
   document.querySelectorAll('.section').forEach(s => s.classList.add('hidden'));
   const sec = ge('section-' + name);
   if (!sec) return;
@@ -191,10 +180,73 @@ async function loadRecs() {
   }
 
   if (!recs || recs.error || !recs.length) {
+    ge('rec-date-tabs').innerHTML = '';
     ge('recs-grid').innerHTML = `<div class="empty-state"><div class="ei">✦</div><h3>No recommendations yet</h3><p>Book a film to unlock personalised picks based on your taste & seat preferences</p></div>`;
     return;
   }
-  renderGrid(recs, 'recs-grid', true);
+
+  S.recsAll = recs;
+  renderDateTabs(recs);
+  applyDateFilter(S.recsSelectedDate || 'all');
+}
+
+function dateKey(isoLike) {
+  // showtime strings come back as "YYYY-MM-DD HH:MM:SS"
+  return (isoLike || '').slice(0, 10);
+}
+
+function renderDateTabs(recs) {
+  const wrap = ge('rec-date-tabs');
+  if (!wrap) return;
+
+  // Collect every distinct date present in the ranked list, in order.
+  const seen = new Set();
+  recs.forEach(r => { if (r.showtime) seen.add(dateKey(r.showtime)); });
+  const dates = Array.from(seen).sort();
+
+  if (!dates.length) { wrap.innerHTML = ''; return; }
+
+  const today = new Date();
+  const todayKey = today.toISOString().slice(0, 10);
+  const tomorrowKey = new Date(today.getTime() + 86400000).toISOString().slice(0, 10);
+
+  const dayLabel = (key) => {
+    if (key === todayKey)    return 'TODAY';
+    if (key === tomorrowKey) return 'TOMORROW';
+    const d = new Date(key + 'T00:00:00');
+    return d.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+  };
+  const dateLabel = (key) => {
+    const d = new Date(key + 'T00:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase();
+  };
+
+  const allActive = (S.recsSelectedDate || 'all') === 'all';
+  let html = `<button class="date-tab${allActive ? ' active' : ''}" onclick="applyDateFilter('all')">
+                <span class="date-tab-day">ALL</span>
+                <span class="date-tab-date">SHOWS</span>
+              </button>`;
+
+  html += dates.map(key => {
+    const active = S.recsSelectedDate === key;
+    return `<button class="date-tab${active ? ' active' : ''}" onclick="applyDateFilter('${key}')">
+              <span class="date-tab-day">${dayLabel(key)}</span>
+              <span class="date-tab-date">${dateLabel(key)}</span>
+            </button>`;
+  }).join('');
+
+  wrap.innerHTML = html;
+}
+
+function applyDateFilter(dateKeyOrAll) {
+  S.recsSelectedDate = dateKeyOrAll;
+  const all = S.recsAll || [];
+  const filtered = dateKeyOrAll === 'all'
+    ? all
+    : all.filter(r => dateKey(r.showtime) === dateKeyOrAll);
+
+  renderDateTabs(all);   // re-render so the active state updates
+  renderGrid(filtered, 'recs-grid', true);
 }
 
 //  MOVIE DETAIL 
