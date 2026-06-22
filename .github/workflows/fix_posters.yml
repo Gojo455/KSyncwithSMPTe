@@ -11,7 +11,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install psycopg2-binary requests
-      - run: python fix_posters.py --apply
+      - run: python fix_posters.py --fetch 20 --apply 
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
