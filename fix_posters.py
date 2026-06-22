@@ -197,11 +197,9 @@ def collect_tmdb_candidates(target_count):
         page = 1
         while len(candidates) < target_count:
             if source_name == 'discover':
-                results, total = tmdb_fetch_page('__discover__', page, extra)
-                # discover has its own URL
-                params = {'page': page, 'language': 'en-US', 'sort_by': 'popularity.desc',
-                          'vote_count.gte': 100}
-                data = tmdb_get(TMDB_DISCOVER_URL, params)
+                params = {'page': page, 'language': 'en-US',
+                          'sort_by': 'popularity.desc', 'vote_count.gte': 100}
+                data    = tmdb_get(TMDB_DISCOVER_URL, params)
                 results = data.get('results', []) if data else []
                 total   = data.get('total_pages', 1) if data else 1
             else:
@@ -224,8 +222,9 @@ def collect_tmdb_candidates(target_count):
 # ── Database helpers ───────────────────────────────────────────────────────────
 
 def get_existing_titles(cur):
-    cur.execute("SELECT LOWER(title) AS lower_title FROM movies")
-    return {row['lower_title'] for row in cur.fetchall()}
+    """Returns a set of lowercase titles already in the movies table."""
+    cur.execute("SELECT LOWER(title) FROM movies")
+    return {row[0] for row in cur.fetchall()}
 
 
 def insert_movie(cur, m):
