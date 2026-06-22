@@ -223,8 +223,8 @@ def collect_tmdb_candidates(target_count):
 
 def get_existing_titles(cur):
     """Returns a set of lowercase titles already in the movies table."""
-    cur.execute("SELECT LOWER(title) FROM movies")
-    return {row[0] for row in cur.fetchall()}
+    cur.execute("SELECT LOWER(title) AS title FROM movies")
+    return {row['title'] for row in cur.fetchall()}
 
 
 def insert_movie(cur, m):
