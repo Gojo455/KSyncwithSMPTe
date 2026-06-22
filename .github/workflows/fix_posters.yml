@@ -1,17 +1,34 @@
-name: Fix Posters
+name: Fetch Movies from TMDB
+
+# Run manually from the Actions tab whenever you want to add new movies.
+# You can also change the number below (50) to fetch more or fewer films.
 on:
-  workflow_dispatch:  # manual trigger only
+  workflow_dispatch:
+    inputs:
+      movie_count:
+        description: 'How many new movies to fetch from TMDB'
+        required: true
+        default: '50'
 
 jobs:
-  fix:
+  fetch:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install psycopg2-binary requests
-      - run: python fix_posters.py --fetch 20 --apply 
+
+      - name: Install dependencies
+        run: pip install requests psycopg2-binary
+
+      - name: Fetch and insert movies
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: |
+          python fix_posters.py --fetch ${{ github.event.inputs.movie_count }} --apply
